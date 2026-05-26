@@ -1,0 +1,21 @@
+seed: 42
+language: en
+output_dir: outputs/data
+max_samples_per_source: 4000
+
+split:
+  train: 0.9
+  val: 0.05
+  test: 0.05
+
+datasets:
+  - id: toxigen_train
+    hf_name: toxigen/toxigen-data
+    config: train
+    split: train
+    enabled: true
+  - id: real_toxicity_prompts
+    hf_name: allenai/real-toxicity-prompts
+    config: null
+    split: train
+    enabled: true

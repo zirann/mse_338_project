@@ -1,0 +1,81 @@
+# Scaling experiment: scale the clean survivor set, not the number of epochs.
+#
+# Conceptual single knob vs configs/experiment_fast.yaml: raise top_k from 32 to 96.
+# To keep top_k as a real top-K cut (not a degenerate "select everything") the Phase A
+# candidate pool is grown in lockstep: num_conditions 16 -> 24 and candidates_per_condition
+# 4 -> 8 -> 192 candidates per phase, top_k=96 selects the top 50% by score_<target>.
+# All optimization-strength knobs (epochs=1, batch_size=1, grad_accum=1, LoRA shape,
+# learning rate, decode, evaluators, filter) stay identical to experiment_fast.yaml.
+# Hypothesis + falsification criterion live in paper/TODO_report.md; runbook for
+# A100/Colab Enterprise at notebooks/colab_enterprise_a100_runbook.md.
+
+seed: 42
+model_name: Qwen/Qwen3-0.6B
+device: auto
+
+seed_prompts_path: outputs/data/val.jsonl
+runs_root: outputs/runs_fast_filtered_topk96
+
+evaluators:
+  - name: toxicbert
+    kind: toxic_bert
+    hf_id: unitary/toxic-bert
+  - name: cardiff
+    kind: cardiff_offensive
+    hf_id: cardiffnlp/twitter-roberta-base-offensive
+
+num_conditions: 24
+candidates_per_condition: 8
+
+risk_labels:
+  - insult
+  - threat
+  - identity_attack
+  - obscene_profanity
+  - sexual_explicit
+  - harassment
+  - hate_speech
+  - other_abuse
+
+severities: [low, mid, high]
+styles: [direct, sarcastic, taunt]
+
+decode:
+  max_new_tokens: 32
+  min_new_tokens: 4
+  temperature: 0.9
+  top_p: 0.95
+  repetition_penalty: 1.12
+
+top_k: 96
+min_train_pairs: 8
+
+# Filter ON, same rules as fast_filt_e1.
+apply_contamination_filter: true
+
+lora:
+  r: 16
+  alpha: 32
+  dropout: 0.05
+  target_modules:
+    - q_proj
+    - k_proj
+    - v_proj
+    - o_proj
+    - up_proj
+    - down_proj
+    - gate_proj
+
+training:
+  epochs: 1.0
+  batch_size: 1
+  grad_accum: 1
+  learning_rate: 0.0002
+  warmup_ratio: 0.03
+  weight_decay: 0.01
+  max_grad_norm: 1.0
+  logging_steps: 1
+  save_strategy: epoch
+  gradient_checkpointing: true
+max_length: 256
+max_train_samples: 12000

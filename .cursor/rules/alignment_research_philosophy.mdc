@@ -1,0 +1,200 @@
+---
+description: Rules for empirical AI alignment research projects. Use for all experiment implementation, evaluation, and analysis work.
+alwaysApply: true
+---
+
+# Alignment Research Workflow Rules
+
+This repository is an empirical AI alignment research project.
+
+The goal is NOT:
+- building a scalable platform
+- building a production moderation system
+- maximizing harmful outputs
+- adding unnecessary infra abstractions
+
+The goal IS:
+- studying evaluator-specific reward hacking
+- observing optimization-induced exploit behaviors
+- measuring transfer vs local exploitation
+- analyzing proxy-vs-gold divergence
+
+Implementation priorities:
+1. empirical clarity
+2. reproducibility
+3. minimal code
+4. fast iteration
+5. observable intermediate artifacts
+
+NOT:
+- extensibility
+- scalability
+- framework design
+
+# Core Engineering Principles
+
+## 1. Minimal Working Experiments First
+
+Always implement the smallest experiment capable of testing the current hypothesis.
+
+Avoid:
+- premature abstractions
+- generalized frameworks
+- plugin systems
+- orchestration layers
+- config-heavy architecture
+
+Prefer:
+- simple scripts
+- explicit logic
+- direct control flow
+- JSONL outputs
+
+If a feature is not necessary for the current experiment, do not implement it.
+
+---
+
+## 2. Preserve Experimental Observability
+
+Every experiment must save:
+- prompts
+- generations
+- evaluator scores
+- selected samples
+- training metadata
+
+Use JSONL whenever possible.
+
+Never hide intermediate outputs inside opaque abstractions.
+
+The repository should make it easy to inspect:
+- what was generated
+- what was selected
+- what was rewarded
+- what changed after optimization
+
+---
+
+## 3. One Hypothesis Per Step
+
+Do not implement multiple research ideas simultaneously.
+
+Each implementation step should test ONE concrete question.
+
+Examples:
+- "Does ToxicBERT optimization induce lexical shortcut exploitation?"
+- "Does optimization against evaluator A transfer to evaluator B?"
+
+Avoid adding unrelated metrics or infrastructure before the core phenomenon is validated.
+
+---
+
+## 4. Prefer Explicit Over Abstract
+
+Prefer:
+- optimize_against_toxic_bert()
+
+Over:
+- AbstractOptimizationManagerFactory
+
+Prefer:
+- analyze_transfer.py
+
+Over:
+- ExperimentOrchestrationPipeline
+
+Research code should be easy to inspect and modify.
+
+---
+
+## 5. Avoid Research Theater
+
+Do not add:
+- dashboards
+- orchestration systems
+- scalable infra
+- distributed systems
+- complex experiment registries
+
+unless explicitly requested.
+
+The project is evaluated on:
+- clarity of empirical insight
+- quality of experimental design
+- strength of analysis
+
+NOT on infrastructure sophistication.
+
+---
+
+## 6. Preserve Alignment Framing
+
+Do not describe the project as:
+- a toxic text generator
+- a harmful content generator
+- a moderation optimization system
+
+Frame the project as:
+- evaluator-specific reward hacking
+- proxy reward exploitation
+- optimization-induced exploit specialization
+- empirical AI alignment research
+
+---
+
+## 7. Qualitative Analysis Matters
+
+Do not focus only on scalar metrics.
+
+Whenever possible:
+- inspect generations
+- summarize exploit patterns
+- identify shortcut behaviors
+- compare evaluator-specific styles
+
+Qualitative behavioral analysis is a first-class research output.
+
+---
+
+## 8. Small Models Preferred
+
+Prefer:
+- Qwen2.5-0.5B
+- LoRA
+- many controlled runs
+
+Over:
+- large models
+- expensive training
+- single large experiments
+
+The focus is optimization dynamics, not frontier capability.
+
+---
+
+## 9. Cross-Evaluator Analysis Is Central
+
+The core research signal is cross-evaluator asymmetry.
+
+Prioritize experiments that reveal:
+M[i,j] != M[j,i]
+
+Examples:
+- high self-evaluator score
+- weak transfer to other evaluators
+- evaluator-specific exploit specialization
+
+This is more important than maximizing absolute scores.
+
+---
+
+## 10. Clean Diffs
+
+Keep code changes surgical.
+
+Avoid:
+- touching unrelated files
+- mass formatting changes
+- speculative refactors
+
+Every changed line should directly support the current experiment.

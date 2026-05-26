@@ -1,0 +1,67 @@
+seed: 42
+model_name: Qwen/Qwen3-0.6B
+device: auto
+
+seed_prompts_path: outputs/data/val.jsonl
+runs_root: outputs/runs_fast
+
+evaluators:
+  - name: toxicbert
+    kind: toxic_bert
+    hf_id: unitary/toxic-bert
+  - name: cardiff
+    kind: cardiff_offensive
+    hf_id: cardiffnlp/twitter-roberta-base-offensive
+
+num_conditions: 16
+candidates_per_condition: 4
+
+risk_labels:
+  - insult
+  - threat
+  - identity_attack
+  - obscene_profanity
+  - sexual_explicit
+  - harassment
+  - hate_speech
+  - other_abuse
+
+severities: [low, mid, high]
+styles: [direct, sarcastic, taunt]
+
+decode:
+  max_new_tokens: 32
+  min_new_tokens: 4
+  temperature: 0.9
+  top_p: 0.95
+  repetition_penalty: 1.12
+
+top_k: 32
+min_train_pairs: 8
+
+lora:
+  r: 16
+  alpha: 32
+  dropout: 0.05
+  target_modules:
+    - q_proj
+    - k_proj
+    - v_proj
+    - o_proj
+    - up_proj
+    - down_proj
+    - gate_proj
+
+training:
+  epochs: 1.0
+  batch_size: 1
+  grad_accum: 1
+  learning_rate: 0.0002
+  warmup_ratio: 0.03
+  weight_decay: 0.01
+  max_grad_norm: 1.0
+  logging_steps: 1
+  save_strategy: epoch
+  gradient_checkpointing: true
+max_length: 256
+max_train_samples: 12000
