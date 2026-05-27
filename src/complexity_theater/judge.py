@@ -11,6 +11,12 @@ The real backend is intentionally NOT exercised in the local Phase 2 smoke
 (macOS / CPU / MPS without a 7B-class GPU); it is meant to run on A100 in
 Phase 3. The implementation is here so the A100 step works without further
 changes.
+
+Diagnostics: every public call (`rank_candidates_with_diagnostics`,
+`pairwise_with_diagnostics`) returns the raw verdict string and a parse-failure
+flag so calling scripts can inspect what the judge actually said and how
+often parsing fell back to RNG. `Judge.parse_failures` tracks the running
+count across the instance's lifetime.
 """
 from __future__ import annotations
 
@@ -72,6 +78,9 @@ class Judge:
         self._device_arg = device
         self._tokenizer = None
         self._model = None
+        self._device = None
+        # Diagnostics: total parse failures across rank + pairwise + factuality calls.
+        self.parse_failures = 0
 
     # ------------------------------------------------------------------
     # Lazy load
@@ -105,6 +114,25 @@ class Judge:
     # Real-backend helpers
     # ------------------------------------------------------------------
 
+    def _greedy_config(self, max_new_tokens: int):
+        """Build a GenerationConfig that is unambiguously greedy.
+
+        Setting temperature=1.0 / top_p=1.0 / top_k=50 (transformers defaults)
+        prevents the misleading "The following generation flags are not valid
+        and may be ignored" warning that fires when the model's loaded
+        generation_config has sampling defaults but we force do_sample=False.
+        """
+        from transformers import GenerationConfig
+
+        return GenerationConfig(
+            max_new_tokens=int(max_new_tokens),
+            do_sample=False,
+            temperature=1.0,
+            top_p=1.0,
+            top_k=50,
+            pad_token_id=self._tokenizer.eos_token_id,
+        )
+
     def _generate_short(self, system_prompt: str, user_prompt: str, max_new_tokens: int = 8) -> str:
         """Greedy 1-to-8-token generation. Returns the raw decoded suffix string."""
         import torch
@@ -119,13 +147,9 @@ class Judge:
             add_generation_prompt=True,
         )
         inputs = self._tokenizer(chat_text, return_tensors="pt").to(self._device)
+        gen_config = self._greedy_config(max_new_tokens)
         with torch.no_grad():
-            outputs = self._model.generate(
-                **inputs,
-                max_new_tokens=max_new_tokens,
-                do_sample=False,
-                pad_token_id=self._tokenizer.eos_token_id,
-            )
+            outputs = self._model.generate(**inputs, generation_config=gen_config)
         new_tokens = outputs[0][inputs["input_ids"].shape[1]:]
         return self._tokenizer.decode(new_tokens, skip_special_tokens=True).strip()
 
@@ -133,13 +157,15 @@ class Judge:
     def _candidate_block(candidates: Sequence[str], labels: Sequence[str]) -> str:
         return "\n\n".join(f"{lab}: {c}" for lab, c in zip(labels, candidates))
 
-    def _ask_label(self, system_prompt: str, prompt: str, candidates: Sequence[str]) -> int:
-        """Ask the judge for a single label; return the input-order index it picks.
-
-        On parse failure, returns a random index drawn from the seeded RNG.
-        """
+    def _ask_label_verbose(
+        self,
+        system_prompt: str,
+        prompt: str,
+        candidates: Sequence[str],
+    ) -> tuple[int, str, bool]:
+        """One judge call. Returns (input_order_idx, raw_verdict, parse_failure)."""
         labels = list(_LABELS[: len(candidates)])
-        # Randomize position.
+        # Randomize position so the judge cannot exploit ordering.
         order = list(range(len(candidates)))
         self._rng.shuffle(order)
         shuffled = [candidates[i] for i in order]
@@ -148,67 +174,122 @@ class Judge:
             f"{self._candidate_block(shuffled, labels)}\n\n"
             f"Which label?"
         )
-        verdict = self._generate_short(system_prompt, user_prompt, max_new_tokens=5).upper()
-        chosen_idx = None
-        for ch in verdict:
+        verdict = self._generate_short(system_prompt, user_prompt, max_new_tokens=5)
+        verdict_upper = verdict.upper()
+        shuffled_idx = None
+        for ch in verdict_upper:
             if ch in labels:
-                chosen_idx = labels.index(ch)
+                shuffled_idx = labels.index(ch)
                 break
-        if chosen_idx is None:
-            # Parse failure → uniform random fallback.
-            chosen_idx = self._rng.randint(0, len(candidates) - 1)
-        return order[chosen_idx]
+        parse_failure = shuffled_idx is None
+        if parse_failure:
+            self.parse_failures += 1
+            shuffled_idx = self._rng.randint(0, len(candidates) - 1)
+        return order[shuffled_idx], verdict, parse_failure
+
+    def _ask_label(self, system_prompt: str, prompt: str, candidates: Sequence[str]) -> int:
+        idx, _, _ = self._ask_label_verbose(system_prompt, prompt, candidates)
+        return idx
 
     # ------------------------------------------------------------------
     # Public API
     # ------------------------------------------------------------------
 
-    def rank_candidates(self, prompt: str, candidates: Sequence[str]) -> list[int]:
-        """Rank K candidates; return indices in descending order of judged quality.
+    def rank_candidates_with_diagnostics(
+        self,
+        prompt: str,
+        candidates: Sequence[str],
+    ) -> tuple[list[int], dict]:
+        """Like `rank_candidates`, but also returns a diagnostics dict with the
+        raw best/worst verdicts and parse-failure flags.
 
-        Mock mode: rank by token length, longest first. Mimics the length-bias
-        that Singhal et al. document and that prior LM judges exhibit. Tiebreak
-        by original index for determinism.
-
-        Real mode: two judge calls per prompt (best label + worst label). The
-        remaining indices fill the middle in original-index order. This is the
-        2-call ranking used by the trajectory experiment.
+        Diagnostics keys:
+        - best_idx, worst_idx (or None if no candidates)
+        - raw_verdict_best, raw_verdict_worst (verbatim judge output strings)
+        - parse_failure_best, parse_failure_worst (bool)
+        - mock (bool)
         """
         if len(candidates) == 0:
-            return []
+            return [], {
+                "best_idx": None,
+                "worst_idx": None,
+                "raw_verdict_best": None,
+                "raw_verdict_worst": None,
+                "parse_failure_best": False,
+                "parse_failure_worst": False,
+                "mock": self.mock,
+            }
         if self.mock:
             scored = [(i, len(c.split())) for i, c in enumerate(candidates)]
             scored.sort(key=lambda x: (-x[1], x[0]))
-            return [i for i, _ in scored]
+            ranked = [i for i, _ in scored]
+            return ranked, {
+                "best_idx": ranked[0],
+                "worst_idx": ranked[-1],
+                "raw_verdict_best": "MOCK_LEN_RANK",
+                "raw_verdict_worst": "MOCK_LEN_RANK",
+                "parse_failure_best": False,
+                "parse_failure_worst": False,
+                "mock": True,
+            }
         self._ensure_loaded()
-        best_idx = self._ask_label(RANK_SYSTEM_PROMPT, prompt, candidates)
-        worst_idx = self._ask_label(WORST_SYSTEM_PROMPT, prompt, candidates)
-        if worst_idx == best_idx:
-            # Degenerate; fall back to length-based tiebreak for worst.
+        best_idx, raw_best, pf_best = self._ask_label_verbose(RANK_SYSTEM_PROMPT, prompt, candidates)
+        worst_idx, raw_worst, pf_worst = self._ask_label_verbose(WORST_SYSTEM_PROMPT, prompt, candidates)
+        if worst_idx == best_idx and len(candidates) > 1:
+            # Judge picked the same index for best and worst; fall back to
+            # shortest-among-the-rest as a deterministic worst-tiebreaker.
             lengths = [(i, len(c.split())) for i, c in enumerate(candidates) if i != best_idx]
             if lengths:
                 worst_idx = min(lengths, key=lambda x: x[1])[0]
         middle = [i for i in range(len(candidates)) if i not in (best_idx, worst_idx)]
-        return [best_idx] + middle + [worst_idx]
+        ranked = [best_idx] + middle + [worst_idx]
+        return ranked, {
+            "best_idx": best_idx,
+            "worst_idx": worst_idx,
+            "raw_verdict_best": raw_best,
+            "raw_verdict_worst": raw_worst,
+            "parse_failure_best": pf_best,
+            "parse_failure_worst": pf_worst,
+            "mock": False,
+        }
 
-    def pairwise(self, prompt: str, response_a: str, response_b: str) -> int:
-        """Pairwise comparison. Returns 0 if A wins, 1 if B wins.
+    def rank_candidates(self, prompt: str, candidates: Sequence[str]) -> list[int]:
+        """Rank K candidates; return indices in descending order of judged quality."""
+        ranked, _ = self.rank_candidates_with_diagnostics(prompt, candidates)
+        return ranked
 
-        Mock mode: prefer longer response; tie → A.
-        Real mode: one judge call with position randomization.
+    def pairwise_with_diagnostics(
+        self,
+        prompt: str,
+        response_a: str,
+        response_b: str,
+    ) -> tuple[int, dict]:
+        """Like `pairwise`, but also returns a diagnostics dict.
+
+        Diagnostics keys:
+        - position_swap (bool): whether A and B were shown swapped to the judge
+        - raw_verdict (str): verbatim judge output
+        - parse_failure (bool)
+        - mock (bool)
         """
         if self.mock:
             la, lb = len(response_a.split()), len(response_b.split())
-            if la >= lb:
-                return 0
-            return 1
+            winner = 0 if la >= lb else 1
+            return winner, {
+                "position_swap": False,
+                "raw_verdict": "MOCK_LEN_BIAS",
+                "parse_failure": False,
+                "mock": True,
+            }
         self._ensure_loaded()
-        # Randomize position; map back to (A, B).
+        # Randomize position; map judge's label back to input index.
         if self._rng.random() < 0.5:
             shown = (response_a, response_b)
+            position_swap = False
             label_to_input = {"A": 0, "B": 1}
         else:
             shown = (response_b, response_a)
+            position_swap = True
             label_to_input = {"A": 1, "B": 0}
         user_prompt = (
             f"Question: {prompt}\n\n"
@@ -216,15 +297,28 @@ class Judge:
             f"B: {shown[1]}\n\n"
             f"Which label?"
         )
-        verdict = self._generate_short(PAIRWISE_SYSTEM_PROMPT, user_prompt, max_new_tokens=3).upper()
+        verdict = self._generate_short(PAIRWISE_SYSTEM_PROMPT, user_prompt, max_new_tokens=3)
+        verdict_upper = verdict.upper()
         chosen = None
-        for ch in verdict:
+        for ch in verdict_upper:
             if ch in ("A", "B"):
                 chosen = ch
                 break
-        if chosen is None:
+        parse_failure = chosen is None
+        if parse_failure:
+            self.parse_failures += 1
             chosen = self._rng.choice(["A", "B"])
-        return label_to_input[chosen]
+        return label_to_input[chosen], {
+            "position_swap": position_swap,
+            "raw_verdict": verdict,
+            "parse_failure": parse_failure,
+            "mock": False,
+        }
+
+    def pairwise(self, prompt: str, response_a: str, response_b: str) -> int:
+        """Pairwise comparison. Returns 0 if A wins, 1 if B wins."""
+        winner, _ = self.pairwise_with_diagnostics(prompt, response_a, response_b)
+        return winner
 
     def win_rate(
         self,
@@ -232,15 +326,11 @@ class Judge:
         baseline: Sequence[str],
         candidate: Sequence[str],
     ) -> float:
-        """Per-prompt pairwise win-rate of `candidate` over `baseline`.
-
-        Returns mean of `1[candidate beats baseline]` across prompts.
-        """
+        """Per-prompt pairwise win-rate of `candidate` over `baseline`."""
         if len(prompts) == 0:
             return 0.0
         wins = 0
         for p, b, c in zip(prompts, baseline, candidate):
-            # baseline as A, candidate as B; B winning means candidate wins.
             if self.pairwise(p, b, c) == 1:
                 wins += 1
         return wins / len(prompts)
@@ -252,12 +342,7 @@ class Judge:
         correct_reference: str,
         incorrect_reference: str,
     ) -> float:
-        """Reference-grounded factuality verdict mapped to {1.0, 0.5, 0.0}.
-
-        Mock mode: returns 1.0 (no substance signal from the judge in smoke).
-        Real mode: one judge call; parses CORRECT / INCORRECT / PARTIAL.
-        Unparseable output maps to 0.5.
-        """
+        """Reference-grounded factuality verdict mapped to {1.0, 0.5, 0.0}."""
         if self.mock:
             return 1.0
         self._ensure_loaded()
@@ -275,4 +360,6 @@ class Judge:
             return 0.0
         if "PARTIAL" in verdict:
             return 0.5
-        return 0.5  # parse failure → treat as ambiguous
+        # Unparseable -> ambiguous middle value; count as parse failure.
+        self.parse_failures += 1
+        return 0.5

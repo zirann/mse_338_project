@@ -83,22 +83,33 @@ def _real_load_policy(cfg: dict, round_n: int):
     return tokenizer, model, device
 
 
-def _real_generate(tokenizer, model, device, question: str, cfg: dict) -> str:
+def _build_eval_sampling_config(tokenizer, gen_cfg: dict):
+    """Explicit sampling GenerationConfig for held-out evaluation.
+
+    Uses `eval_temperature` (typically lower than train-time `temperature` for
+    stable measurement) and passes the config object directly so the model's
+    loaded `generation_config.json` defaults do not leak in.
+    """
+    from transformers import GenerationConfig
+
+    return GenerationConfig(
+        max_new_tokens=int(gen_cfg.get("max_new_tokens", 200)),
+        do_sample=True,
+        temperature=float(gen_cfg.get("eval_temperature", 0.7)),
+        top_p=float(gen_cfg.get("top_p", 0.95)),
+        top_k=int(gen_cfg.get("top_k", 50)),
+        pad_token_id=tokenizer.eos_token_id,
+    )
+
+
+def _real_generate(tokenizer, model, device, question: str, gen_config) -> str:
     import torch
 
     messages = [{"role": "user", "content": question}]
     chat_text = tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
     inputs = tokenizer(chat_text, return_tensors="pt").to(device)
-    gen_cfg = cfg["generation"]
     with torch.no_grad():
-        outputs = model.generate(
-            **inputs,
-            max_new_tokens=int(gen_cfg.get("max_new_tokens", 200)),
-            do_sample=True,
-            temperature=float(gen_cfg.get("eval_temperature", 0.7)),
-            top_p=float(gen_cfg.get("top_p", 0.95)),
-            pad_token_id=tokenizer.eos_token_id,
-        )
+        outputs = model.generate(**inputs, generation_config=gen_config)
     new_tokens = outputs[0][inputs["input_ids"].shape[1]:]
     return tokenizer.decode(new_tokens, skip_special_tokens=True).strip()
 
@@ -132,17 +143,20 @@ def main() -> None:
         eval_rows = eval_rows[: args.limit]
     print(f"[evaluate round={round_n}] {len(eval_rows)} prompts mock={args.mock}")
 
+    gen_config = None
     if args.mock:
         tokenizer = model = device = None
     else:
         tokenizer, model, device = _real_load_policy(cfg, round_n)
+        gen_config = _build_eval_sampling_config(tokenizer, cfg["generation"])
+        print(f"[evaluate round={round_n}] generation config: {gen_config.to_dict()}")
 
     responses: list[dict] = []
     for row in eval_rows:
         if args.mock:
             resp_text = mock_response(row["question"], round_n)
         else:
-            resp_text = _real_generate(tokenizer, model, device, row["question"], cfg)
+            resp_text = _real_generate(tokenizer, model, device, row["question"], gen_config)
         responses.append(
             {
                 "prompt_id": row["id"],
@@ -183,7 +197,11 @@ def main() -> None:
         "information_density": _mean([s["information_density"] for s in sub_per]),
     }
 
+    out_dir = ROOT / cfg["outputs"]["per_round_dir_template"].format(round=round_n)
+    out_dir.mkdir(parents=True, exist_ok=True)
+
     # Composite (round > 0): judge_win_rate_vs_round_0
+    winrate_rows: list[dict] = []
     if round_n > 0:
         r0_path = ROOT / cfg["outputs"]["per_round_dir_template"].format(round=0) / "eval_responses.jsonl"
         if r0_path.exists():
@@ -194,17 +212,38 @@ def main() -> None:
             for r in responses:
                 if r["prompt_id"] not in r0_by_id:
                     continue
-                outcome = judge.pairwise(r["question"], r0_by_id[r["prompt_id"]], r["response"])
-                if outcome == 1:  # B (current round) wins
+                # A = round 0, B = current round; winner=1 means current-round wins.
+                winner, diag = judge.pairwise_with_diagnostics(
+                    r["question"], r0_by_id[r["prompt_id"]], r["response"]
+                )
+                winrate_rows.append(
+                    {
+                        "prompt_id": r["prompt_id"],
+                        "question": r["question"],
+                        "round_0_response": r0_by_id[r["prompt_id"]],
+                        "round_n_response": r["response"],
+                        "position_swap": diag["position_swap"],
+                        "raw_verdict": diag["raw_verdict"],
+                        "parse_failure": diag["parse_failure"],
+                        "winner": "round_n" if winner == 1 else "round_0",
+                        "mock": diag["mock"],
+                    }
+                )
+                if winner == 1:
                     wins += 1
                 counted += 1
             metrics["judge_win_rate_vs_round_0"] = wins / counted if counted else None
+            write_jsonl(out_dir / "winrate_pairs.jsonl", winrate_rows)
+            print(
+                f"[evaluate round={round_n}] wrote {out_dir / 'winrate_pairs.jsonl'} "
+                f"({len(winrate_rows)} pairs, parse_failures={sum(int(r['parse_failure']) for r in winrate_rows)})"
+            )
         else:
             metrics["judge_win_rate_vs_round_0"] = None
             print(f"[evaluate round={round_n}] WARN: {r0_path} missing; win-rate skipped")
 
-    out_dir = ROOT / cfg["outputs"]["per_round_dir_template"].format(round=round_n)
-    out_dir.mkdir(parents=True, exist_ok=True)
+    metrics["judge_parse_failures_total_instance"] = judge.parse_failures
+
     write_jsonl(out_dir / "eval_responses.jsonl", responses)
     write_json(out_dir / "metrics.json", metrics)
     print(f"[evaluate round={round_n}] wrote {out_dir / 'metrics.json'}")

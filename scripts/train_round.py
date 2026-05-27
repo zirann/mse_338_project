@@ -24,8 +24,9 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
+from complexity_theater import appearance  # noqa: E402
 from complexity_theater.dpo import run_one_dpo_round  # noqa: E402
-from complexity_theater.io_utils import read_jsonl, read_yaml, write_jsonl  # noqa: E402
+from complexity_theater.io_utils import read_jsonl, read_yaml, write_json, write_jsonl  # noqa: E402
 from complexity_theater.judge import Judge  # noqa: E402
 
 
@@ -81,27 +82,104 @@ def _real_load_policy(cfg: dict, prev_round_n: int):
     return tokenizer, model, device
 
 
-def _real_sample_k(tokenizer, model, device, question: str, k: int, cfg: dict) -> list[str]:
+def _build_sampling_config(tokenizer, gen_cfg: dict):
+    """Explicit sampling GenerationConfig for candidate generation.
+
+    Passing this object (instead of kwargs) prevents the model's loaded
+    `generation_config.json` defaults from leaking through and confusing the
+    "valid generation flags" check inside transformers.
+    """
+    from transformers import GenerationConfig
+
+    return GenerationConfig(
+        max_new_tokens=int(gen_cfg.get("max_new_tokens", 200)),
+        do_sample=True,
+        temperature=float(gen_cfg.get("temperature", 0.9)),
+        top_p=float(gen_cfg.get("top_p", 0.95)),
+        top_k=int(gen_cfg.get("top_k", 50)),
+        pad_token_id=tokenizer.eos_token_id,
+    )
+
+
+def _real_sample_k(tokenizer, model, device, question: str, k: int, gen_config) -> list[str]:
     import torch
 
     messages = [{"role": "user", "content": question}]
     chat_text = tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
     inputs = tokenizer(chat_text, return_tensors="pt").to(device)
-    gen_cfg = cfg["generation"]
     out: list[str] = []
     for _ in range(k):
         with torch.no_grad():
-            outputs = model.generate(
-                **inputs,
-                max_new_tokens=int(gen_cfg.get("max_new_tokens", 200)),
-                do_sample=True,
-                temperature=float(gen_cfg.get("temperature", 0.9)),
-                top_p=float(gen_cfg.get("top_p", 0.95)),
-                pad_token_id=tokenizer.eos_token_id,
-            )
+            outputs = model.generate(**inputs, generation_config=gen_config)
         new_tokens = outputs[0][inputs["input_ids"].shape[1]:]
         out.append(tokenizer.decode(new_tokens, skip_special_tokens=True).strip())
     return out
+
+
+# ---------------------------------------------------------------------------
+# Diagnostics
+# ---------------------------------------------------------------------------
+
+def _token_overlap(a: str, b: str) -> float:
+    """Jaccard overlap on whitespace-token sets. Empty inputs -> 0.0."""
+    sa, sb = set(a.split()), set(b.split())
+    if not sa and not sb:
+        return 0.0
+    return len(sa & sb) / max(len(sa | sb), 1)
+
+
+def _mean(xs: list[float]) -> float:
+    return sum(xs) / len(xs) if xs else 0.0
+
+
+def _preference_diagnostics(
+    pairs: list[dict],
+    judge_examples: list[dict],
+    judge_parse_failures_total: int,
+) -> dict:
+    """Summary stats over the preference pairs the judge just produced.
+
+    Crucial for diagnosing why DPO might be a no-op: if chosen and rejected
+    have nearly identical appearance metrics, the policy has nothing to
+    optimize against.
+    """
+    chosen_texts = [p["chosen"] for p in pairs]
+    rejected_texts = [p["rejected"] for p in pairs]
+
+    chosen_len = [appearance.length(t) for t in chosen_texts]
+    rejected_len = [appearance.length(t) for t in rejected_texts]
+    chosen_struct = [appearance.structural_complexity(t) for t in chosen_texts]
+    rejected_struct = [appearance.structural_complexity(t) for t in rejected_texts]
+    chosen_epi = [appearance.epistemic_marker_density(t) for t in chosen_texts]
+    rejected_epi = [appearance.epistemic_marker_density(t) for t in rejected_texts]
+
+    near_identical = sum(
+        1 for p in pairs if _token_overlap(p["chosen"], p["rejected"]) > 0.9
+    )
+
+    # Per-rank-call parse failures (best + worst label asked separately).
+    pf_calls = sum(
+        int(e["parse_failure_best"]) + int(e["parse_failure_worst"])
+        for e in judge_examples
+    )
+    pf_call_total = 2 * len(judge_examples)
+    return {
+        "num_pairs": len(pairs),
+        "num_rank_calls": pf_call_total,
+        "mean_length_chosen": _mean(chosen_len),
+        "mean_length_rejected": _mean(rejected_len),
+        "mean_length_delta": _mean(chosen_len) - _mean(rejected_len),
+        "mean_structural_complexity_chosen": _mean(chosen_struct),
+        "mean_structural_complexity_rejected": _mean(rejected_struct),
+        "mean_structural_complexity_delta": _mean(chosen_struct) - _mean(rejected_struct),
+        "mean_epistemic_marker_density_chosen": _mean(chosen_epi),
+        "mean_epistemic_marker_density_rejected": _mean(rejected_epi),
+        "mean_epistemic_marker_density_delta": _mean(chosen_epi) - _mean(rejected_epi),
+        "num_near_identical_pairs": near_identical,
+        "judge_parse_failures_rank_calls": pf_calls,
+        "judge_parse_failure_rate_rank": pf_calls / max(pf_call_total, 1),
+        "judge_parse_failures_total_instance": judge_parse_failures_total,
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -133,11 +211,13 @@ def main() -> None:
         train_rows = train_rows[: args.limit]
     print(f"[train_round={round_n}] {len(train_rows)} prompts, k={k}, mock={args.mock}")
 
+    gen_config = None
     if args.mock:
         tokenizer = model = device = None
     else:
-        # Reference policy = previous round's adapter (round N-1).
         tokenizer, model, device = _real_load_policy(cfg, prev_round_n=round_n - 1)
+        gen_config = _build_sampling_config(tokenizer, cfg["generation"])
+        print(f"[train_round={round_n}] generation config: {gen_config.to_dict()}")
 
     # Generate K candidates per prompt.
     candidates: list[dict] = []
@@ -145,7 +225,7 @@ def main() -> None:
         if args.mock:
             texts = [mock_candidate(row["question"], ki) for ki in range(k)]
         else:
-            texts = _real_sample_k(tokenizer, model, device, row["question"], k, cfg)
+            texts = _real_sample_k(tokenizer, model, device, row["question"], k, gen_config)
         for ki, t in enumerate(texts):
             candidates.append(
                 {
@@ -175,15 +255,33 @@ def main() -> None:
         by_prompt[c["prompt_id"]].append(c)
 
     pairs: list[dict] = []
+    judge_example_rows: list[dict] = []
     for pid, cands in by_prompt.items():
         cands.sort(key=lambda x: x["k_index"])
-        ranked = judge.rank_candidates(cands[0]["question"], [c["response"] for c in cands])
+        ranked, diag = judge.rank_candidates_with_diagnostics(
+            cands[0]["question"], [c["response"] for c in cands]
+        )
         if len(ranked) < 2:
             continue
         top = cands[ranked[0]]
         bot = cands[ranked[-1]]
+        # Always record the judge example, even on degenerate (identical) cases.
+        judge_example_rows.append(
+            {
+                "prompt_id": pid,
+                "question": cands[0]["question"],
+                "candidates": [c["response"] for c in cands],
+                "ranked_indices": ranked,
+                "best_idx": diag["best_idx"],
+                "worst_idx": diag["worst_idx"],
+                "raw_verdict_best": diag["raw_verdict_best"],
+                "raw_verdict_worst": diag["raw_verdict_worst"],
+                "parse_failure_best": diag["parse_failure_best"],
+                "parse_failure_worst": diag["parse_failure_worst"],
+                "mock": diag["mock"],
+            }
+        )
         if top["response"] == bot["response"]:
-            # Degenerate: judge picked identical strings; skip.
             continue
         pairs.append(
             {
@@ -197,6 +295,14 @@ def main() -> None:
     pairs_path = out_dir / "preference_pairs.jsonl"
     write_jsonl(pairs_path, pairs)
     print(f"[train_round={round_n}] wrote {pairs_path} ({len(pairs)} pairs)")
+
+    judge_examples_path = out_dir / "judge_examples.jsonl"
+    write_jsonl(judge_examples_path, judge_example_rows)
+    print(f"[train_round={round_n}] wrote {judge_examples_path} ({len(judge_example_rows)} rows)")
+
+    diag_path = out_dir / "preference_diagnostics.json"
+    write_json(diag_path, _preference_diagnostics(pairs, judge_example_rows, judge.parse_failures))
+    print(f"[train_round={round_n}] wrote {diag_path}")
 
     # DPO step (mock skips real training; both paths write train_metadata.json).
     adapter_dir = out_dir / "adapter"

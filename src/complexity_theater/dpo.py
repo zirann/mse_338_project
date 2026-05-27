@@ -47,6 +47,26 @@ def _count_lines(path: Path) -> int:
         return sum(1 for line in f if line.strip())
 
 
+def _lora_param_norm(model) -> float:
+    """Sum-of-squares norm of LoRA A/B parameters in `model`.
+
+    Fresh-init LoRA has B = 0 and A ~ Gaussian, so this is non-zero before
+    training. The delta (final - initial) is the cleanest scalar indicator
+    that the LoRA actually moved.
+    """
+    total_sq = 0.0
+    for name, p in model.named_parameters():
+        if "lora_" in name.lower():
+            total_sq += float(p.detach().pow(2).sum().item())
+    return total_sq ** 0.5
+
+
+def _count_trainable(model) -> tuple[int, int]:
+    trainable = sum(p.numel() for p in model.parameters() if p.requires_grad)
+    total = sum(p.numel() for p in model.parameters())
+    return trainable, total
+
+
 def run_one_dpo_round(
     base_model_name: str,
     reference_adapter_path: Path | str | None,
@@ -126,6 +146,14 @@ def run_one_dpo_round(
     )
     model = get_peft_model(model, peft_config)
 
+    trainable_params, total_params = _count_trainable(model)
+    lora_norm_initial = _lora_param_norm(model)
+    print(
+        f"[dpo] trainable={trainable_params:,} / total={total_params:,} "
+        f"({100.0 * trainable_params / max(total_params, 1):.4f}%); "
+        f"initial LoRA norm={lora_norm_initial:.4f}"
+    )
+
     # Preference dataset.
     pairs = []
     with pairs_path.open("r", encoding="utf-8") as f:
@@ -182,6 +210,13 @@ def run_one_dpo_round(
 
     train_result = trainer.train()
 
+    lora_norm_final = _lora_param_norm(model)
+    lora_norm_delta = lora_norm_final - lora_norm_initial
+    print(
+        f"[dpo] final LoRA norm={lora_norm_final:.4f} "
+        f"(delta={lora_norm_delta:+.4f})"
+    )
+
     # Save adapter + tokenizer.
     model.save_pretrained(str(adapter_dir))
     tokenizer.save_pretrained(str(adapter_dir))
@@ -189,6 +224,9 @@ def run_one_dpo_round(
     # Extract final-step metrics best-effort.
     train_loss = None
     final_kl = None
+    last_rewards_chosen = None
+    last_rewards_rejected = None
+    last_rewards_margins = None
     if trainer.state.log_history:
         for entry in reversed(trainer.state.log_history):
             if train_loss is None and "loss" in entry:
@@ -197,23 +235,32 @@ def run_one_dpo_round(
                 if key in entry:
                     final_kl = float(entry[key])
                     break
-            if train_loss is not None and final_kl is not None:
+            if last_rewards_chosen is None and "rewards/chosen" in entry:
+                last_rewards_chosen = float(entry["rewards/chosen"])
+            if last_rewards_rejected is None and "rewards/rejected" in entry:
+                last_rewards_rejected = float(entry["rewards/rejected"])
+            if last_rewards_margins is None and "rewards/margins" in entry:
+                last_rewards_margins = float(entry["rewards/margins"])
+            done = (
+                train_loss is not None
+                and final_kl is not None
+                and last_rewards_margins is not None
+            )
+            if done:
                 break
     if hasattr(train_result, "training_loss") and train_loss is None:
         try:
             train_loss = float(train_result.training_loss)
         except Exception:
             pass
-    final_kl = float(final_kl) if final_kl is not None else 0.0
 
-    # KL abort sanity check.
-    if math.isfinite(final_kl) and final_kl > float(hp.get("abort_kl_threshold", 5.0)):
-        # We still save metadata so the orchestrator sees it; raising here
-        # makes the script fail loudly per Risk R3 in the plan.
-        raise RuntimeError(
-            f"DPO KL ({final_kl:.3f}) exceeded abort threshold "
-            f"({hp.get('abort_kl_threshold', 5.0):.3f}); adapter saved but flagged."
-        )
+    # KL abort sanity check (only when TRL actually reported it).
+    if final_kl is not None and math.isfinite(final_kl):
+        if final_kl > float(hp.get("abort_kl_threshold", 5.0)):
+            raise RuntimeError(
+                f"DPO KL ({final_kl:.3f}) exceeded abort threshold "
+                f"({hp.get('abort_kl_threshold', 5.0):.3f}); adapter saved but flagged."
+            )
 
     metadata = {
         "status": "ok",
@@ -224,7 +271,15 @@ def run_one_dpo_round(
         "lora": lora,
         "seed": seed,
         "train_loss": train_loss,
-        "final_kl": final_kl,
+        "final_kl": final_kl,  # None when TRL did not report a KL key
+        "rewards_chosen": last_rewards_chosen,
+        "rewards_rejected": last_rewards_rejected,
+        "rewards_margins": last_rewards_margins,
+        "trainable_params": trainable_params,
+        "total_params": total_params,
+        "lora_norm_initial": lora_norm_initial,
+        "lora_norm_final": lora_norm_final,
+        "lora_norm_delta": lora_norm_delta,
     }
     with (adapter_dir / "train_metadata.json").open("w", encoding="utf-8") as f:
         json.dump(metadata, f, indent=2)
@@ -233,7 +288,10 @@ def run_one_dpo_round(
         "adapter_path": str(adapter_dir),
         "train_loss": train_loss,
         "final_kl": final_kl,
+        "rewards_margins": last_rewards_margins,
         "num_pairs": len(pairs),
+        "trainable_params": trainable_params,
+        "lora_norm_delta": lora_norm_delta,
         "hparams": hp,
         "mock": False,
     }
