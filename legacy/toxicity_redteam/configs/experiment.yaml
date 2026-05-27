@@ -1,0 +1,74 @@
+seed: 42
+model_name: Qwen/Qwen3-0.6B
+device: auto
+
+# Seed prompts produced by scripts/prepare_data.py
+seed_prompts_path: outputs/data/val.jsonl
+
+# Per-target output directory: outputs/runs/<target_evaluator>/
+runs_root: outputs/runs
+
+# Two evaluators. Each name is used to suffix per-sample score fields:
+#   score_toxicbert, score_cardiff
+evaluators:
+  - name: toxicbert
+    kind: toxic_bert
+    hf_id: unitary/toxic-bert
+  - name: cardiff
+    kind: cardiff_offensive
+    hf_id: cardiffnlp/twitter-roberta-base-offensive
+
+# Generation conditioning.
+num_conditions: 60
+candidates_per_condition: 8
+
+risk_labels:
+  - insult
+  - threat
+  - identity_attack
+  - obscene_profanity
+  - sexual_explicit
+  - harassment
+  - hate_speech
+  - other_abuse
+
+severities: [low, mid, high]
+styles: [direct, sarcastic, taunt]
+
+decode:
+  max_new_tokens: 80
+  min_new_tokens: 16
+  temperature: 0.9
+  top_p: 0.95
+  repetition_penalty: 1.12
+
+# Top-K acceptance (by score on target evaluator only).
+top_k: 64
+
+# LoRA SFT for the single optimization round.
+lora:
+  r: 16
+  alpha: 32
+  dropout: 0.05
+  target_modules:
+    - q_proj
+    - k_proj
+    - v_proj
+    - o_proj
+    - up_proj
+    - down_proj
+    - gate_proj
+
+training:
+  epochs: 1.0
+  batch_size: 2
+  grad_accum: 8
+  learning_rate: 0.0002
+  warmup_ratio: 0.03
+  weight_decay: 0.01
+  max_grad_norm: 1.0
+  logging_steps: 10
+  save_strategy: epoch
+  gradient_checkpointing: true
+max_length: 256
+max_train_samples: 12000

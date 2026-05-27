@@ -72,16 +72,32 @@ Each section opens with a stated *mechanism* (the causal hypothesis), followed b
 - Figures: `assets/figures/diversity_collapse_plot.png`.
 - Failure-mode signature: this is not a failure mode per se; it is a *measurement* claim. The implication is that any paper or pipeline that reports train_loss alone after SFT on small reward-selected sets is potentially blind to both Section 3 and Section 4 failure modes.
 
-## Section 6 — Cross-cutting limitation: cardiff diagonal is negative in every regime
+## Section 6 — Scaling the clean survivor set does not amplify the asymmetry; it surfaces the blind-spot failure on toxicbert
 
-**Mechanism**: cardiff is a binary offensive head trained on Twitter-style data; its activations depend heavily on surface register (sarcastic-praise, pseudo-quote-with-slur) and short-form structure. The contamination filter removes the rows in the top-K that cardiff most aggressively over-weights (short shard-prefixed texts), so the clean survivor set has a lower cardiff mean than the unfiltered top-K. SFT regresses the policy toward the survivor mean and therefore lowers cardiff post-mean in absolute terms. The asymmetric signal survives because *toxicbert* regresses less than cardiff does, but the diagonal-lift sign is dominated by the filter-survivor regression.
+**Mechanism**: filter blind-spot overfitting is governed by *total exposure to surviving blind-spot tokens*, which equals `accepted_after_filter × epochs`. The Section 4 failure (cardiff under `fast_filt_e3`) raises that product by raising epochs on a small clean set. The scaling experiment (`fast_filt_topk96`) raises the same product by raising clean survivors at fixed epochs=1. Both interventions produce comparable total exposure to filter-surviving 8-char shards and therefore produce the same prefix-memorization failure — just on different targets, depending on which shard tokens happen to dominate each target's survivor set.
 
-**Claim**: in all three regimes, `diagonal_lift(cardiff) < 0`, i.e. cardiff-target SFT never raises the cardiff post-mean above the cardiff pre-mean. This is an unresolved structural feature, not an artifact of any single configuration.
+**Claim**: under `fast_filt_topk96` (top_k=96 with pool size 192 so the cut is real top-50%, filter ON, epochs=1, all other knobs identical to `fast_filt_e1`), own − transfer is essentially flat on toxicbert (+0.034 → +0.033) and modestly less anti-specialized on cardiff (−0.035 → −0.028), but a new failure appears: all five toxicbert-target post-SFT top-5 outputs begin with the deterministic 8-character prefix `intColor` (length 8 → passes the conservative `len < 6` filter rule), and cardiff post-distinct_2 collapses 0.50 → 0.36. The scaling hypothesis "more clean data strengthens specialization" is falsified at this scale; the bottleneck is structural disagreement between the two evaluators, not data quantity.
 
 - Supporting evidence:
-  - `fast_filt_e1` cardiff diagonal = −0.03423.
+  - accepted_after_filter: toxicbert 9 → 40, cardiff 10 → 34 (~4× more clean training rows). Source: `outputs/runs_fast_filtered_topk96/<target>/metrics.json` → `filter_stats.accepted_after_filter`.
+  - own − transfer: toxicbert +0.03369 → +0.03291 (flat), cardiff −0.03483 → −0.02759 (modest +0.00724 magnitude improvement). Source: `outputs/reports_fast_filtered_topk96/transfer_matrix.json` → `deltas_post_minus_pre`.
+  - distinct_2_post: toxicbert 0.436 → 0.421 (mild), cardiff 0.498 → 0.360 (collapse). Source: per-target `metrics.json` → `distinct_2_post`.
+  - Top-5 toxicbert post-SFT: all five begin with `intColor`. Source: `outputs/reports_fast_filtered_topk96/transfer_summary.md` and `transfer_matrix.json` → `top_examples_post.toxicbert`.
+  - train_loss mean: toxicbert 2.66 → 2.54, cardiff 2.97 → 2.38 (lower; more memorization, not better alignment — same dissociation as Section 5).
+- Figure: none yet specific to this section; extending `assets/figures/own_minus_transfer_barplot.png` to a 4-regime panel including `fast_filt_topk96` is tracked in `TODO_report.md`.
+- Failure-mode signature: `intColor`-prefix overfitting on toxicbert (parallel to the `iquement.` overfit on cardiff under `fast_filt_e3`). Same family as Section 4, induced by a different knob.
+
+## Section 8 — Cross-cutting limitation: cardiff diagonal is negative in every regime
+
+**Mechanism**: cardiff is a binary offensive head trained on Twitter-style data; its activations depend heavily on surface register (sarcastic-praise, pseudo-quote-with-slur) and short-form structure. The contamination filter removes the rows in the top-K that cardiff most aggressively over-weights (short shard-prefixed texts), so the clean survivor set has a lower cardiff mean than the unfiltered top-K. SFT regresses the policy toward the survivor mean and therefore lowers cardiff post-mean in absolute terms. The asymmetric signal survives because *toxicbert* regresses less than cardiff does, but the diagonal-lift sign is dominated by the filter-survivor regression. The Section 6 scaling experiment confirms this: ~3.4× more clean cardiff training rows did not flip the diagonal sign.
+
+**Claim**: across all four configurations tested in this work, `diagonal_lift(cardiff) < 0`, i.e. cardiff-target SFT never raises the cardiff post-mean above the cardiff pre-mean. This is an unresolved structural feature, not an artifact of any single configuration; the scaling-experiment result rules out "needs more clean data" as the explanation.
+
+- Supporting evidence:
+  - `fast_filt_e1` cardiff diagonal = −0.03425.
   - `fast_unfilt_e1` cardiff diagonal = −0.04700.
   - `fast_filt_e3` cardiff diagonal = −0.01803.
+  - **`fast_filt_topk96` cardiff diagonal = −0.03048** (with 34 clean training rows, ~3.4× more than `fast_filt_e1`).
   - Source: each `outputs/reports_*/transfer_matrix.json` → `deltas_post_minus_pre.cardiff.cardiff.delta_mean`.
-- Figure: `assets/figures/own_minus_transfer_barplot.png` (shows the asymmetry; the absolute negativity of the diagonal needs to be discussed in prose).
-- Failure-mode signature: not a failure of the paper's method — a limitation of the experiment's instrument. The optional scaling experiment in `TODO_report.md` is the natural follow-up that would test whether more clean data flips the cardiff diagonal positive.
+- Figure: `assets/figures/own_minus_transfer_barplot.png` (shows the asymmetry; the absolute negativity of the diagonal needs to be discussed in prose; consider adding the `fast_filt_topk96` bar — tracked in `TODO_report.md`).
+- Failure-mode signature: not a failure of the paper's method — a limitation of the experiment's instrument. Resolution would require either a different classifier-pair choice or a different reward-aggregation strategy (RL with KL constraint, DPO with paired preferences, etc.), all explicitly out of scope for this work.

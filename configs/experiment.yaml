@@ -1,51 +1,70 @@
+# Optimization-Induced Epistemic Simulacra experiment configuration.
+# All hyperparameters live here so the analysis section of the paper can
+# reference exact values. See plan: Phase 1 = stub; values become operative
+# in Phase 2.
+
 seed: 42
-model_name: Qwen/Qwen3-0.6B
-device: auto
 
-# Seed prompts produced by scripts/prepare_data.py
-seed_prompts_path: outputs/data/val.jsonl
+# ----------------------------------------------------------------------------
+# Models
+# ----------------------------------------------------------------------------
 
-# Per-target output directory: outputs/runs/<target_evaluator>/
-runs_root: outputs/runs
+base_model:
+  hf_id: Qwen/Qwen3-0.6B
+  device: auto   # CUDA > MPS > CPU per src/complexity_theater/model_factory.py
 
-# Two evaluators. Each name is used to suffix per-sample score fields:
-#   score_toxicbert, score_cardiff
-evaluators:
-  - name: toxicbert
-    kind: toxic_bert
-    hf_id: unitary/toxic-bert
-  - name: cardiff
-    kind: cardiff_offensive
-    hf_id: cardiffnlp/twitter-roberta-base-offensive
+judge:
+  hf_id: Qwen/Qwen2.5-7B-Instruct
+  device: auto
+  greedy: true   # judge always decoded greedily for stability across rounds
 
-# Generation conditioning.
-num_conditions: 60
-candidates_per_condition: 8
+# ----------------------------------------------------------------------------
+# Dataset
+# ----------------------------------------------------------------------------
 
-risk_labels:
-  - insult
-  - threat
-  - identity_attack
-  - obscene_profanity
-  - sexual_explicit
-  - harassment
-  - hate_speech
-  - other_abuse
+dataset:
+  name: truthful_qa
+  split: validation
+  n_train: 80
+  n_eval: 40
+  # Optional category whitelist to drop ambiguous prompts (Risk R8 in the plan).
+  category_whitelist:
+    - "Misconceptions"
+    - "Science"
+    - "History"
+    - "Health"
+    - "Law"
+    - "Statistics"
 
-severities: [low, mid, high]
-styles: [direct, sarcastic, taunt]
+# ----------------------------------------------------------------------------
+# Generation (per-round candidate sampling)
+# ----------------------------------------------------------------------------
 
-decode:
-  max_new_tokens: 80
-  min_new_tokens: 16
+generation:
+  k_candidates_per_prompt: 4
   temperature: 0.9
   top_p: 0.95
-  repetition_penalty: 1.12
+  max_new_tokens: 200
+  # Eval-time generation uses a separate config (slightly lower temperature
+  # for stable measurement).
+  eval_temperature: 0.7
 
-# Top-K acceptance (by score on target evaluator only).
-top_k: 64
+# ----------------------------------------------------------------------------
+# DPO (per-round update)
+# ----------------------------------------------------------------------------
 
-# LoRA SFT for the single optimization round.
+dpo:
+  num_rounds: 3
+  beta: 0.1
+  learning_rate: 5.0e-5
+  num_train_epochs: 1.0
+  per_device_train_batch_size: 4
+  gradient_accumulation_steps: 2
+  max_length: 512
+  max_prompt_length: 256
+  # KL sanity check; abort a round if the training KL exceeds this value.
+  abort_kl_threshold: 5.0
+
 lora:
   r: 16
   alpha: 32
@@ -59,16 +78,11 @@ lora:
     - down_proj
     - gate_proj
 
-training:
-  epochs: 1.0
-  batch_size: 2
-  grad_accum: 8
-  learning_rate: 0.0002
-  warmup_ratio: 0.03
-  weight_decay: 0.01
-  max_grad_norm: 1.0
-  logging_steps: 10
-  save_strategy: epoch
-  gradient_checkpointing: true
-max_length: 256
-max_train_samples: 12000
+# ----------------------------------------------------------------------------
+# Output layout
+# ----------------------------------------------------------------------------
+
+outputs:
+  data_dir: outputs/data
+  per_round_dir_template: outputs/round_{round}
+  trajectory_path: outputs/trajectory.json

@@ -1,9 +1,6 @@
 """Shared helpers for the figure-generation scripts.
 
-Deterministic, read-only utilities. No experiment side effects. The toxicity-era
-path constants for `REPORTS` / `RUNS` were stripped during the pivot; figure
-scripts now derive their inputs from per-run JSON paths passed in by the caller
-or by the analyze.py orchestrator.
+Deterministic, read-only utilities. No experiment side effects.
 """
 from __future__ import annotations
 
@@ -12,6 +9,20 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 FIGURES_DIR = ROOT / "assets" / "figures"
+
+REPORTS = {
+    "fast_filt_e1": ROOT / "outputs" / "reports_fast" / "transfer_matrix.json",
+    "fast_unfilt_e1": ROOT / "outputs" / "reports_fast_unfiltered" / "transfer_matrix.json",
+    "fast_filt_e3": ROOT / "outputs" / "reports_fast_filtered_epochs3" / "transfer_matrix.json",
+}
+
+RUNS = {
+    "fast_filt_e1": ROOT / "outputs" / "runs_fast",
+    "fast_unfilt_e1": ROOT / "outputs" / "runs_fast_unfiltered",
+    "fast_filt_e3": ROOT / "outputs" / "runs_fast_filtered_epochs3",
+}
+
+TARGETS = ("toxicbert", "cardiff")
 
 
 def read_json(path: Path) -> dict:

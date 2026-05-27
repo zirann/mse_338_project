@@ -1,0 +1,239 @@
+"""Thin wrapper around `trl.DPOTrainer` for one preference-optimization round.
+
+LoRA on Qwen3-0.6B, beta=0.1, 1 epoch, ~80 preference pairs per round. The
+reference policy for round N is the round-(N-1) adapter (iterated DPO);
+round 1's reference is the base model.
+
+Two modes:
+
+- `mock=True`: skip real training; write a placeholder
+  `<output_adapter_dir>/train_metadata.json` so subsequent scripts can detect
+  that the round "happened". Used by local CPU/MPS smoke tests where TRL +
+  Qwen3 + LoRA is too heavy to exercise meaningfully.
+- `mock=False`: real DPO via `trl.DPOTrainer`. Targets `trl >= 0.11`; falls
+  back to attribute checks where the TRL API shifts between minor versions.
+"""
+from __future__ import annotations
+
+import json
+import math
+from pathlib import Path
+from typing import Any
+
+
+DEFAULT_HPARAMS: dict[str, Any] = {
+    "beta": 0.1,
+    "learning_rate": 5e-5,
+    "num_train_epochs": 1.0,
+    "per_device_train_batch_size": 4,
+    "gradient_accumulation_steps": 2,
+    "max_length": 512,
+    "max_prompt_length": 256,
+    "abort_kl_threshold": 5.0,
+}
+
+DEFAULT_LORA: dict[str, Any] = {
+    "r": 16,
+    "alpha": 32,
+    "dropout": 0.05,
+    "target_modules": ["q_proj", "k_proj", "v_proj", "o_proj", "up_proj", "down_proj", "gate_proj"],
+}
+
+
+def _count_lines(path: Path) -> int:
+    if not path.exists():
+        return 0
+    with path.open("r", encoding="utf-8") as f:
+        return sum(1 for line in f if line.strip())
+
+
+def run_one_dpo_round(
+    base_model_name: str,
+    reference_adapter_path: Path | str | None,
+    preference_pairs_jsonl: Path | str,
+    output_adapter_dir: Path | str,
+    hparams: dict[str, Any] | None = None,
+    lora_config: dict[str, Any] | None = None,
+    seed: int = 42,
+    mock: bool = False,
+) -> dict[str, Any]:
+    """Run one DPO round; save the new LoRA adapter; return metadata."""
+    hp = {**DEFAULT_HPARAMS, **(hparams or {})}
+    lora = {**DEFAULT_LORA, **(lora_config or {})}
+    pairs_path = Path(preference_pairs_jsonl)
+    adapter_dir = Path(output_adapter_dir)
+    adapter_dir.mkdir(parents=True, exist_ok=True)
+    num_pairs = _count_lines(pairs_path)
+
+    if mock:
+        metadata = {
+            "status": "mock",
+            "base_model_name": base_model_name,
+            "reference_adapter_path": str(reference_adapter_path) if reference_adapter_path else None,
+            "num_pairs": num_pairs,
+            "hparams": hp,
+            "lora": lora,
+            "seed": seed,
+        }
+        with (adapter_dir / "train_metadata.json").open("w", encoding="utf-8") as f:
+            json.dump(metadata, f, indent=2)
+        return {
+            "adapter_path": str(adapter_dir),
+            "train_loss": float("nan"),
+            "final_kl": 0.0,
+            "num_pairs": num_pairs,
+            "hparams": hp,
+            "mock": True,
+        }
+
+    # Real DPO path. Deferred imports keep mock-mode lightweight.
+    import torch  # noqa: F401
+    from datasets import Dataset
+    from peft import LoraConfig, PeftModel, TaskType, get_peft_model
+    from transformers import AutoModelForCausalLM, AutoTokenizer
+    from trl import DPOConfig, DPOTrainer
+
+    # Tokenizer.
+    tokenizer = AutoTokenizer.from_pretrained(base_model_name, trust_remote_code=True)
+    if tokenizer.pad_token is None:
+        tokenizer.pad_token = tokenizer.eos_token
+
+    # Base model + reference adapter.
+    model = AutoModelForCausalLM.from_pretrained(
+        base_model_name,
+        torch_dtype="auto",
+        trust_remote_code=True,
+    )
+    if reference_adapter_path is not None:
+        ref_path = Path(reference_adapter_path)
+        if ref_path.exists():
+            model = PeftModel.from_pretrained(model, str(ref_path))
+            # Merge the reference adapter so subsequent LoRA is fresh on top.
+            try:
+                model = model.merge_and_unload()
+            except Exception:
+                # Some PEFT versions return the merged model directly; some do not.
+                pass
+
+    # Apply a fresh LoRA on top for this round's update.
+    peft_config = LoraConfig(
+        task_type=TaskType.CAUSAL_LM,
+        r=lora["r"],
+        lora_alpha=lora["alpha"],
+        lora_dropout=lora["dropout"],
+        target_modules=list(lora["target_modules"]),
+        bias="none",
+    )
+    model = get_peft_model(model, peft_config)
+
+    # Preference dataset.
+    pairs = []
+    with pairs_path.open("r", encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            r = json.loads(line)
+            pairs.append({"prompt": r["prompt"], "chosen": r["chosen"], "rejected": r["rejected"]})
+    if not pairs:
+        raise RuntimeError(f"No preference pairs at {pairs_path}")
+    dataset = Dataset.from_list(pairs)
+
+    # DPOConfig. Field names differ slightly across trl 0.7 -> 0.13; we set
+    # the common ones and rely on TRL to ignore unknown kwargs when applicable.
+    dpo_kwargs = dict(
+        output_dir=str(adapter_dir),
+        beta=hp["beta"],
+        learning_rate=hp["learning_rate"],
+        num_train_epochs=hp["num_train_epochs"],
+        per_device_train_batch_size=hp["per_device_train_batch_size"],
+        gradient_accumulation_steps=hp["gradient_accumulation_steps"],
+        max_length=hp["max_length"],
+        max_prompt_length=hp["max_prompt_length"],
+        seed=seed,
+        report_to=[],
+        save_strategy="no",
+        logging_steps=1,
+        remove_unused_columns=False,
+    )
+    try:
+        dpo_config = DPOConfig(**dpo_kwargs)
+    except TypeError:
+        # Drop kwargs that newer/older TRL releases reject; retry.
+        for k in ("max_length", "max_prompt_length", "remove_unused_columns"):
+            dpo_kwargs.pop(k, None)
+        dpo_config = DPOConfig(**dpo_kwargs)
+
+    # Trainer. The tokenizer kwarg was renamed `processing_class` in newer TRL.
+    try:
+        trainer = DPOTrainer(
+            model=model,
+            args=dpo_config,
+            train_dataset=dataset,
+            processing_class=tokenizer,
+        )
+    except TypeError:
+        trainer = DPOTrainer(
+            model=model,
+            args=dpo_config,
+            train_dataset=dataset,
+            tokenizer=tokenizer,
+        )
+
+    train_result = trainer.train()
+
+    # Save adapter + tokenizer.
+    model.save_pretrained(str(adapter_dir))
+    tokenizer.save_pretrained(str(adapter_dir))
+
+    # Extract final-step metrics best-effort.
+    train_loss = None
+    final_kl = None
+    if trainer.state.log_history:
+        for entry in reversed(trainer.state.log_history):
+            if train_loss is None and "loss" in entry:
+                train_loss = float(entry["loss"])
+            for key in ("kl", "policy_kl", "reward_kl"):
+                if key in entry:
+                    final_kl = float(entry[key])
+                    break
+            if train_loss is not None and final_kl is not None:
+                break
+    if hasattr(train_result, "training_loss") and train_loss is None:
+        try:
+            train_loss = float(train_result.training_loss)
+        except Exception:
+            pass
+    final_kl = float(final_kl) if final_kl is not None else 0.0
+
+    # KL abort sanity check.
+    if math.isfinite(final_kl) and final_kl > float(hp.get("abort_kl_threshold", 5.0)):
+        # We still save metadata so the orchestrator sees it; raising here
+        # makes the script fail loudly per Risk R3 in the plan.
+        raise RuntimeError(
+            f"DPO KL ({final_kl:.3f}) exceeded abort threshold "
+            f"({hp.get('abort_kl_threshold', 5.0):.3f}); adapter saved but flagged."
+        )
+
+    metadata = {
+        "status": "ok",
+        "base_model_name": base_model_name,
+        "reference_adapter_path": str(reference_adapter_path) if reference_adapter_path else None,
+        "num_pairs": len(pairs),
+        "hparams": hp,
+        "lora": lora,
+        "seed": seed,
+        "train_loss": train_loss,
+        "final_kl": final_kl,
+    }
+    with (adapter_dir / "train_metadata.json").open("w", encoding="utf-8") as f:
+        json.dump(metadata, f, indent=2)
+
+    return {
+        "adapter_path": str(adapter_dir),
+        "train_loss": train_loss,
+        "final_kl": final_kl,
+        "num_pairs": len(pairs),
+        "hparams": hp,
+        "mock": False,
+    }

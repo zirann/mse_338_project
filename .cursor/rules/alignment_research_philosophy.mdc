@@ -1,200 +1,273 @@
 ---
-description: Rules for empirical AI alignment research projects. Use for all experiment implementation, evaluation, and analysis work.
+description: Rules for empirical AI alignment research focused on evaluator bias, epistemic appearance optimization, and complexity theater. Prefer minimal experiments, observable artifacts, and conceptual clarity over infrastructure sophistication.
 alwaysApply: true
 ---
 
-# Alignment Research Workflow Rules
+# Complexity Theater Research Rules
 
 This repository is an empirical AI alignment research project.
 
 The goal is NOT:
 - building a scalable platform
+- building a generic RLHF framework
 - building a production moderation system
-- maximizing harmful outputs
-- adding unnecessary infra abstractions
+- maximizing benchmark scores
+- creating unnecessary abstractions or infrastructure
 
 The goal IS:
-- studying evaluator-specific reward hacking
-- observing optimization-induced exploit behaviors
-- measuring transfer vs local exploitation
-- analyzing proxy-vs-gold divergence
+- studying optimization toward evaluator-legible signals
+- measuring divergence between apparent depth and actual depth
+- analyzing structural and epistemic complexity signaling
+- investigating evaluator preference biases
+- identifying optimization-induced epistemic simulacra
+- producing visually obvious and interpretable empirical artifacts
 
-Implementation priorities:
+The repository should prioritize:
 1. empirical clarity
-2. reproducibility
-3. minimal code
-4. fast iteration
-5. observable intermediate artifacts
+2. conceptual sharpness
+3. reproducibility
+4. observable intermediate artifacts
+5. small, interpretable experiments
+6. fast iteration
+7. clean experimental framing
 
 NOT:
-- extensibility
 - scalability
-- framework design
+- orchestration
+- generalized frameworks
+- production engineering
+- speculative abstractions
 
-# Core Engineering Principles
+# Core Research Principles
 
-## 1. Minimal Working Experiments First
+## 1. Prefer Minimal Experiments
 
 Always implement the smallest experiment capable of testing the current hypothesis.
 
 Avoid:
-- premature abstractions
-- generalized frameworks
 - plugin systems
 - orchestration layers
-- config-heavy architecture
+- generalized config hierarchies
+- reusable infrastructure that is not needed now
+- speculative abstractions
 
 Prefer:
-- simple scripts
-- explicit logic
+- small scripts
 - direct control flow
+- explicit experiment logic
 - JSONL outputs
+- lightweight analysis notebooks/scripts
 
-If a feature is not necessary for the current experiment, do not implement it.
+Research code should remain hackable and easy to inspect.
 
 ---
 
-## 2. Preserve Experimental Observability
+## 2. State the Research Question Before Coding
+
+Before implementation, first state:
+
+1. the experimental hypothesis
+2. why the proposed implementation is sufficient
+3. possible confounders
+4. what result would support or falsify the hypothesis
+5. which metric represents:
+   - apparent quality
+   - actual quality
+   - structural complexity
+   - epistemic signaling
+
+Do not begin coding until tied to a concrete empirical question.
+
+---
+
+## 3. Preserve Experimental Observability
 
 Every experiment must save:
 - prompts
-- generations
+- raw generations
+- judge outputs
 - evaluator scores
-- selected samples
-- training metadata
+- structural metrics
+- factual metrics
+- selected examples
+- intermediate artifacts
 
 Use JSONL whenever possible.
 
-Never hide intermediate outputs inside opaque abstractions.
+Never hide intermediate outputs behind opaque abstractions.
 
 The repository should make it easy to inspect:
 - what was generated
-- what was selected
-- what was rewarded
-- what changed after optimization
+- what evaluators rewarded
+- which stylistic signals changed
+- how appearance diverged from substance
 
 ---
 
-## 3. One Hypothesis Per Step
+## 4. Appearance vs Substance Is Central
 
-Do not implement multiple research ideas simultaneously.
+The core research framing is:
 
-Each implementation step should test ONE concrete question.
+Optimization may reward evaluator-legible epistemic appearances
+rather than underlying informational quality.
 
-Examples:
-- "Does ToxicBERT optimization induce lexical shortcut exploitation?"
-- "Does optimization against evaluator A transfer to evaluator B?"
+Examples of appearance signals:
+- verbosity
+- markdown structure
+- headers
+- bullet formatting
+- caveats
+- nuanced framing
+- confidence markers
+- “thoughtful” language
+- formal analytical style
 
-Avoid adding unrelated metrics or infrastructure before the core phenomenon is validated.
+Examples of substance signals:
+- factual correctness
+- informational density
+- calibration
+- reasoning validity
+- non-redundant content
 
----
-
-## 4. Prefer Explicit Over Abstract
-
-Prefer:
-- optimize_against_toxic_bert()
-
-Over:
-- AbstractOptimizationManagerFactory
-
-Prefer:
-- analyze_transfer.py
-
-Over:
-- ExperimentOrchestrationPipeline
-
-Research code should be easy to inspect and modify.
+Experiments should explicitly separate these whenever possible.
 
 ---
 
-## 5. Avoid Research Theater
+## 5. Prefer Visually Obvious Artifacts
+
+Prioritize experiments that produce:
+- side-by-side behavioral differences
+- interpretable formatting artifacts
+- obvious stylistic inflation
+- measurable evaluator preference distortions
+- judge-score vs factual-score divergence
+
+The project should optimize for:
+“a researcher immediately understands the phenomenon.”
+
+Avoid tiny or ambiguous effect-size claims if a clearer artifact can be isolated.
+
+---
+
+## 6. Avoid Research Theater
 
 Do not add:
 - dashboards
-- orchestration systems
-- scalable infra
 - distributed systems
-- complex experiment registries
+- scalable infra
+- agent frameworks
+- orchestration platforms
+- speculative benchmark registries
 
-unless explicitly requested.
+unless explicitly required.
 
 The project is evaluated on:
 - clarity of empirical insight
 - quality of experimental design
 - strength of analysis
+- conceptual originality
 
-NOT on infrastructure sophistication.
-
----
-
-## 6. Preserve Alignment Framing
-
-Do not describe the project as:
-- a toxic text generator
-- a harmful content generator
-- a moderation optimization system
-
-Frame the project as:
-- evaluator-specific reward hacking
-- proxy reward exploitation
-- optimization-induced exploit specialization
-- empirical AI alignment research
+NOT infrastructure sophistication.
 
 ---
 
-## 7. Qualitative Analysis Matters
-
-Do not focus only on scalar metrics.
-
-Whenever possible:
-- inspect generations
-- summarize exploit patterns
-- identify shortcut behaviors
-- compare evaluator-specific styles
-
-Qualitative behavioral analysis is a first-class research output.
-
----
-
-## 8. Small Models Preferred
+## 7. Prefer Explicit Over Abstract
 
 Prefer:
-- Qwen2.5-0.5B
-- LoRA
-- many controlled runs
+- compute_factscore.py
+- run_judge_comparison.py
+- analyze_complexity_signals.py
 
 Over:
-- large models
-- expensive training
-- single large experiments
+- EvaluationOrchestrationFramework
+- MetaJudgeManagerFactory
+- UnifiedOptimizationPipeline
 
-The focus is optimization dynamics, not frontier capability.
+Keep logic direct and inspectable.
 
 ---
 
-## 9. Cross-Evaluator Analysis Is Central
+## 8. Workspace Hygiene
 
-The core research signal is cross-evaluator asymmetry.
+Actively remove or archive obsolete files.
 
-Prioritize experiments that reveal:
-M[i,j] != M[j,i]
+Move old project artifacts to:
+legacy/
+
+This includes:
+- toxicity-specific experiments
+- outdated reports
+- obsolete configs
+- dead scripts
+- unused outputs
+- duplicated notebooks
+- abandoned evaluation code
+
+Before deleting:
+- check imports
+- check tests
+- check README references
+- check active experiment usage
+
+If uncertain:
+move to legacy/ instead of deleting.
+
+Do not keep files “just in case.”
+
+---
+
+## 9. One Hypothesis Per Experiment
+
+Each experiment should isolate ONE phenomenon.
 
 Examples:
-- high self-evaluator score
-- weak transfer to other evaluators
-- evaluator-specific exploit specialization
+- “Do judges reward markdown structure independently of factual quality?”
+- “Does verbosity inflate perceived analytical depth?”
+- “Do caveat-heavy responses increase judge preference without increasing correctness?”
 
-This is more important than maximizing absolute scores.
+Avoid combining multiple optimization mechanisms simultaneously.
 
 ---
 
 ## 10. Clean Diffs
 
-Keep code changes surgical.
+Every changed line should directly support the current experiment.
 
 Avoid:
-- touching unrelated files
-- mass formatting changes
-- speculative refactors
+- unrelated rewrites
+- broad refactors
+- mass formatting
+- speculative cleanup
 
-Every changed line should directly support the current experiment.
+After each implementation step, summarize:
+- files changed
+- files archived
+- files deleted
+- how to verify results
+
+## 11. Optimization Dynamics Matter
+
+The project studies how optimization pressure changes epistemic presentation over time.
+
+Preference optimization should remain:
+- lightweight
+- interpretable
+- observable
+
+Prefer:
+- iterative DPO
+- LoRA
+- pairwise preference optimization
+- small controlled rounds
+
+Over:
+- large-scale RLHF
+- PPO/GRPO infrastructure
+- high-variance reinforcement learning systems
+
+The goal is to observe:
+- epistemic-style drift
+- complexity-theater amplification
+- divergence between evaluator preference and factual substance
+
+Optimization trajectories should remain human-interpretable.
