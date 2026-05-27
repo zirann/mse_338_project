@@ -62,7 +62,13 @@ def test_epistemic_marker_density_case_insensitive() -> None:
 def test_appearance_metrics_keys() -> None:
     from complexity_theater.appearance import appearance_metrics
     m = appearance_metrics("# Title\n- one\nHowever, this is important.")
-    assert set(m) == {"length", "structural_complexity", "epistemic_marker_density"}
+    assert set(m) == {
+        "length",
+        "structural_complexity",
+        "reasoning_narration_density",
+        "hedge_density",
+        "epistemic_marker_density",
+    }
     assert m["length"] > 0
     assert m["structural_complexity"] >= 2  # 1 header + 1 bullet
 
@@ -70,4 +76,55 @@ def test_appearance_metrics_keys() -> None:
 def test_appearance_metrics_empty_string() -> None:
     from complexity_theater.appearance import appearance_metrics
     m = appearance_metrics("")
-    assert m == {"length": 0, "structural_complexity": 0, "epistemic_marker_density": 0.0}
+    assert m == {
+        "length": 0,
+        "structural_complexity": 0,
+        "reasoning_narration_density": 0.0,
+        "hedge_density": 0.0,
+        "epistemic_marker_density": 0.0,
+    }
+
+
+def test_reasoning_narration_density_zero_on_clean_text() -> None:
+    from complexity_theater.appearance import reasoning_narration_density
+    assert reasoning_narration_density("the cat sat on the mat") == 0.0
+
+
+def test_reasoning_narration_density_positive_on_first_person_reasoning() -> None:
+    from complexity_theater.appearance import reasoning_narration_density
+    # "Let me start by recalling. I think the answer is yes." has:
+    #   "let me" (1) + "i think" (1) = 2 markers, 10 tokens -> 20.0
+    d = reasoning_narration_density("Let me start by recalling. I think the answer is yes.")
+    assert 15.0 < d < 25.0
+
+
+def test_hedge_density_zero_on_neutral_text() -> None:
+    from complexity_theater.appearance import hedge_density
+    assert hedge_density("the cat sat on the mat") == 0.0
+
+
+def test_hedge_density_positive_on_hedge_phrases() -> None:
+    from complexity_theater.appearance import hedge_density
+    # "However, generally speaking, this varies in some cases" has:
+    #   "however" (1) + "generally speaking" (1) + "in some cases" (1) = 3 markers,
+    #   7 tokens -> ~42.9
+    d = hedge_density("However, generally speaking, this varies in some cases")
+    assert d > 0.0
+
+
+def test_reasoning_narration_and_hedge_are_orthogonal() -> None:
+    """Adding reasoning narration should not raise hedge density and vice versa.
+
+    The two new headline metrics use disjoint subclass groups, so each metric
+    is zero on text that only contains the other group's phrases.
+    """
+    from complexity_theater.appearance import hedge_density, reasoning_narration_density
+
+    narration_text = "Let me think about this. I should consider the options."
+    hedge_text = "However, that said, it varies in some cases."
+
+    assert hedge_density(narration_text) == 0.0
+    assert reasoning_narration_density(narration_text) > 0.0
+
+    assert reasoning_narration_density(hedge_text) == 0.0
+    assert hedge_density(hedge_text) > 0.0

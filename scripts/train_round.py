@@ -150,6 +150,10 @@ def _preference_diagnostics(
     rejected_len = [appearance.length(t) for t in rejected_texts]
     chosen_struct = [appearance.structural_complexity(t) for t in chosen_texts]
     rejected_struct = [appearance.structural_complexity(t) for t in rejected_texts]
+    chosen_reas = [appearance.reasoning_narration_density(t) for t in chosen_texts]
+    rejected_reas = [appearance.reasoning_narration_density(t) for t in rejected_texts]
+    chosen_hedge = [appearance.hedge_density(t) for t in chosen_texts]
+    rejected_hedge = [appearance.hedge_density(t) for t in rejected_texts]
     chosen_epi = [appearance.epistemic_marker_density(t) for t in chosen_texts]
     rejected_epi = [appearance.epistemic_marker_density(t) for t in rejected_texts]
 
@@ -172,6 +176,12 @@ def _preference_diagnostics(
         "mean_structural_complexity_chosen": _mean(chosen_struct),
         "mean_structural_complexity_rejected": _mean(rejected_struct),
         "mean_structural_complexity_delta": _mean(chosen_struct) - _mean(rejected_struct),
+        "mean_reasoning_narration_density_chosen": _mean(chosen_reas),
+        "mean_reasoning_narration_density_rejected": _mean(rejected_reas),
+        "mean_reasoning_narration_density_delta": _mean(chosen_reas) - _mean(rejected_reas),
+        "mean_hedge_density_chosen": _mean(chosen_hedge),
+        "mean_hedge_density_rejected": _mean(rejected_hedge),
+        "mean_hedge_density_delta": _mean(chosen_hedge) - _mean(rejected_hedge),
         "mean_epistemic_marker_density_chosen": _mean(chosen_epi),
         "mean_epistemic_marker_density_rejected": _mean(rejected_epi),
         "mean_epistemic_marker_density_delta": _mean(chosen_epi) - _mean(rejected_epi),

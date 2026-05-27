@@ -192,7 +192,13 @@ def main() -> None:
         "mock": args.mock,
         "length": _mean([a["length"] for a in app_per]),
         "structural_complexity": _mean([a["structural_complexity"] for a in app_per]),
-        "epistemic_marker_density": _mean([a["epistemic_marker_density"] for a in app_per]),
+        "reasoning_narration_density": _mean(
+            [a["reasoning_narration_density"] for a in app_per]
+        ),
+        "hedge_density": _mean([a["hedge_density"] for a in app_per]),
+        "epistemic_marker_density": _mean(
+            [a["epistemic_marker_density"] for a in app_per]
+        ),
         "factuality": _mean(fact_scores),
         "information_density": _mean([s["information_density"] for s in sub_per]),
     }
