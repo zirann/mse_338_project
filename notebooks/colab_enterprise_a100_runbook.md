@@ -1,5 +1,11 @@
 # Colab Enterprise / A100 runbook
 
+> DEPRECATED. This runbook documents the old multi-round "Epistemic Simulacra"
+> trajectory framing, which has been superseded by the uncertainty-suppression +
+> mitigation project. Use `notebooks/colab_a100_runbook.md` instead. This file
+> is retained only as a historical reference for the trajectory (now an appendix
+> experiment).
+
 Optimization-Induced Epistemic Simulacra. Multi-round DPO trajectory experiment.
 
 Target runtime: a single NVIDIA A100 (40GB or 80GB) on Google Colab Enterprise / Vertex AI Workbench. The full trajectory fits in approximately 90 minutes of A100 time end-to-end (~25 to 35 minutes per round across 3 rounds, plus dataset preparation and round-0 baseline eval).

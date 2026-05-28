@@ -1,0 +1,10 @@
+# PART I-C: length-matched random-preference DPO (rules out the DPO length-bias confound).
+base_config: configs/experiment.yaml
+
+arm:
+  name: random_length_matched
+  pair_construction: random
+  length_match_ratio: [0.8, 1.2]
+  mitigation: none
+  mitigation_params: {}
+  out_dir_template: outputs/random_length_matched/seed{seed}

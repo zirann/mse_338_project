@@ -274,27 +274,47 @@ def hedge_density(
     return _subclass_density(text, _HEDGE_SUBCLASSES, lexicon)
 
 
+def confidence_marker_density(
+    text: str,
+    lexicon: dict[str, list[str]] | None = None,
+) -> float:
+    """Density of confidence markers per 100 tokens.
+
+    Predicted to RISE under DPO; paired with `hedge_density` (predicted to
+    fall) to give the appearance axis a falsifiable two-directional shape
+    under the calibration / confidence-inflation framing. Uses the EXISTING
+    `confidence` subclass of the lexicon ("importantly", "notably",
+    "clearly", "definitely", "without a doubt", "as is well known",
+    "undeniably", "certainly"). No new lexicon entries.
+    """
+    return _subclass_density(text, ("confidence",), lexicon)
+
+
 # ---------------------------------------------------------------------------
 # Public composite
 # ---------------------------------------------------------------------------
 
 
 def appearance_metrics(text: str) -> dict[str, float]:
-    """Five appearance metrics for one response.
+    """Six appearance metrics for one response.
 
-    Headline (used in trajectory + headline figure):
+    Headline pair (used in calibration figure):
+    - hedge_density: predicted DOWN under preference optimization
+    - confidence_marker_density: predicted UP under preference optimization
+
+    Supporting / appendix:
     - length: token count
     - structural_complexity: header_count + bullet_count
-    - reasoning_narration_density: predicted UP under DPO
-    - hedge_density: predicted DOWN under DPO
-
-    Back-compat (kept in trajectory.json but not plotted):
-    - epistemic_marker_density: wide union of all 7 lexicon subclasses
+    - reasoning_narration_density: pre-registered prediction; trajectory is
+      non-monotone, kept for the appendix.
+    - epistemic_marker_density: wide union of all 7 lexicon subclasses, kept
+      for trajectory.json back-compat.
     """
     return {
         "length": length(text),
         "structural_complexity": structural_complexity(text),
         "reasoning_narration_density": reasoning_narration_density(text),
         "hedge_density": hedge_density(text),
+        "confidence_marker_density": confidence_marker_density(text),
         "epistemic_marker_density": epistemic_marker_density(text),
     }

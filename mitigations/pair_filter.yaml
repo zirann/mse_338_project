@@ -1,0 +1,15 @@
+# PART II-1 (required): data-level mitigation. Drop preference pairs that would
+# train the policy to prefer LESS uncertainty: keep only pairs where
+# uncertainty_score(chosen) >= uncertainty_score(rejected) - epsilon.
+# Applied on top of the random-preference base so the mitigation is tested
+# against the optimization-intrinsic drift (not just the judge signal).
+base_config: configs/experiment.yaml
+
+arm:
+  name: mit_pairfilter
+  pair_construction: random
+  length_match_ratio: null
+  mitigation: pair_filter
+  mitigation_params:
+    uncertainty_filter_epsilon: 0.0
+  out_dir_template: outputs/mit_pairfilter/seed{seed}

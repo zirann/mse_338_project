@@ -67,6 +67,7 @@ def test_appearance_metrics_keys() -> None:
         "structural_complexity",
         "reasoning_narration_density",
         "hedge_density",
+        "confidence_marker_density",
         "epistemic_marker_density",
     }
     assert m["length"] > 0
@@ -81,6 +82,7 @@ def test_appearance_metrics_empty_string() -> None:
         "structural_complexity": 0,
         "reasoning_narration_density": 0.0,
         "hedge_density": 0.0,
+        "confidence_marker_density": 0.0,
         "epistemic_marker_density": 0.0,
     }
 
@@ -110,6 +112,26 @@ def test_hedge_density_positive_on_hedge_phrases() -> None:
     #   7 tokens -> ~42.9
     d = hedge_density("However, generally speaking, this varies in some cases")
     assert d > 0.0
+
+
+def test_confidence_marker_density_zero_on_neutral_text() -> None:
+    from complexity_theater.appearance import confidence_marker_density
+    assert confidence_marker_density("the cat sat on the mat") == 0.0
+
+
+def test_confidence_marker_density_positive_on_confidence_phrases() -> None:
+    from complexity_theater.appearance import confidence_marker_density
+    # Each of these phrases is in the EXISTING "confidence" subclass of the
+    # lexicon: "clearly" and "certainly". With 7 tokens, 2 markers -> density
+    # 100 * 2 / 7 ~= 28.57.
+    d = confidence_marker_density("Clearly the answer is certainly true here")
+    assert d > 0.0
+
+
+def test_confidence_marker_density_excludes_hedge_phrases() -> None:
+    """Hedge phrases must not be counted as confidence markers (lexicon disjoint)."""
+    from complexity_theater.appearance import confidence_marker_density
+    assert confidence_marker_density("However, in some cases this varies") == 0.0
 
 
 def test_reasoning_narration_and_hedge_are_orthogonal() -> None:

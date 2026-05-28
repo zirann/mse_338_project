@@ -1,0 +1,10 @@
+# PART I-B: random-preference DPO control (isolates optimization-intrinsic drift).
+base_config: configs/experiment.yaml
+
+arm:
+  name: random
+  pair_construction: random
+  length_match_ratio: null
+  mitigation: none
+  mitigation_params: {}
+  out_dir_template: outputs/random/seed{seed}

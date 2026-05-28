@@ -1,0 +1,13 @@
+# PART I-A: standard judge-selected-preference DPO (the reference effect).
+# Thin arm config: inherits configs/experiment.yaml and overlays an `arm` block.
+# The runner merges base_config first, then this file; CLI flags override the
+# arm block.
+base_config: configs/experiment.yaml
+
+arm:
+  name: judge_dpo
+  pair_construction: judge        # judge | random
+  length_match_ratio: null        # [lo, hi] or null
+  mitigation: none                # none | pair_filter | uncertainty_reg
+  mitigation_params: {}
+  out_dir_template: outputs/judge_dpo/seed{seed}

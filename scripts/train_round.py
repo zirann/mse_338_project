@@ -38,8 +38,14 @@ sys.path.insert(0, str(ROOT / "src"))
 
 from complexity_theater import appearance  # noqa: E402
 from complexity_theater.dpo import run_one_dpo_round  # noqa: E402
-from complexity_theater.io_utils import read_jsonl, read_yaml, write_json, write_jsonl  # noqa: E402
+from complexity_theater.io_utils import (  # noqa: E402
+    read_arm_config,
+    read_jsonl,
+    write_json,
+    write_jsonl,
+)
 from complexity_theater.judge import Judge  # noqa: E402
+from complexity_theater.uncertainty import filter_uncertainty_preserving_pairs  # noqa: E402
 
 
 # ---------------------------------------------------------------------------
@@ -174,6 +180,40 @@ def _build_judge_preference_pairs(
     return pairs
 
 
+def _filter_length_matched(
+    pairs: list[dict],
+    ratio_lo: float,
+    ratio_hi: float,
+) -> list[dict]:
+    """Retain only pairs whose chosen-to-rejected token-length ratio lies in
+    `[ratio_lo, ratio_hi]`.
+
+    This is the dataset-level length-bias control suggested by Park et al.
+    (2024), Section 3 (R-DPO discussion). Implementing it as a pair filter
+    rather than as a loss-side regularizer (R-DPO) or KL down-sampling
+    (SamPO) preserves the existing DPO loss exactly and keeps the
+    intervention transparent.
+
+    Token length is the whitespace-split count. A pair with a zero-length
+    `rejected` is dropped (avoids division by zero). The `chosen == rejected`
+    case is already filtered upstream by both pair-construction helpers.
+    """
+    if ratio_hi < ratio_lo:
+        raise ValueError(
+            f"length_match_ratio bounds must satisfy lo <= hi; got {ratio_lo}, {ratio_hi}"
+        )
+    kept: list[dict] = []
+    for p in pairs:
+        n_chosen = len(p["chosen"].split())
+        n_rejected = len(p["rejected"].split())
+        if n_rejected == 0:
+            continue
+        ratio = n_chosen / n_rejected
+        if ratio_lo <= ratio <= ratio_hi:
+            kept.append(p)
+    return kept
+
+
 def _build_random_preference_pairs(
     by_prompt: dict[str, list[dict]],
     seed: int,
@@ -284,9 +324,54 @@ def parse_args() -> argparse.Namespace:
         help="Random-control: form preference pairs by uniform random selection rather than judge ranking.",
     )
     p.add_argument(
+        "--length_match_ratio",
+        nargs=2,
+        type=float,
+        default=None,
+        metavar=("LO", "HI"),
+        help=(
+            "Length-bias control (Park et al. 2024 style, dataset-level): "
+            "after pair construction, retain only pairs whose len(chosen)/len(rejected) "
+            "is in [LO, HI]. Sanity-aborts if fewer than 4 pairs survive."
+        ),
+    )
+    p.add_argument(
+        "--seed",
+        type=int,
+        default=None,
+        help="Override cfg.seed for this run (used for multi-seed arms; also picks the random-pair shuffle).",
+    )
+    p.add_argument(
+        "--uncertainty_filter_epsilon",
+        type=float,
+        default=None,
+        metavar="EPS",
+        help=(
+            "Mitigation 1 (data-level): after pair construction, keep only pairs where "
+            "uncertainty_score(chosen) >= uncertainty_score(rejected) - EPS. Sanity-aborts below 4 pairs."
+        ),
+    )
+    p.add_argument(
+        "--regularized",
+        action="store_true",
+        help="Mitigation 2 (loss-level): route DPO through the standalone uncertainty-regularized loop.",
+    )
+    p.add_argument(
+        "--reg_formulation",
+        choices=["A", "B", "C"],
+        default=None,
+        help="Regularizer formulation: A (mass floor, default), B (chosen hedge logprob), C (entropy floor).",
+    )
+    p.add_argument(
+        "--reg_lambda",
+        type=float,
+        default=None,
+        help="Regularizer weight lambda in L = L_DPO + lambda * penalty.",
+    )
+    p.add_argument(
         "--out_dir",
         default=None,
-        help="Override the default per-round output directory (e.g. outputs/control_random_round_1).",
+        help="Override the default per-round output directory (e.g. outputs/random/seed0).",
     )
     return p.parse_args()
 
@@ -296,10 +381,30 @@ def main() -> None:
     if args.round < 1:
         raise SystemExit("train_round.py requires --round >= 1 (round 0 is the baseline policy).")
 
-    cfg = read_yaml(args.config)
+    cfg = read_arm_config(args.config)
+    arm = cfg.get("arm", {}) or {}
     round_n = int(args.round)
     k = int(cfg["generation"]["k_candidates_per_prompt"])
-    seed = int(cfg.get("seed", 42))
+    seed = int(args.seed) if args.seed is not None else int(cfg.get("seed", 42))
+
+    # Arm-driven settings; CLI flags override the arm block.
+    use_random = args.random_preferences or (arm.get("pair_construction") == "random")
+    length_match = args.length_match_ratio
+    if length_match is None and arm.get("length_match_ratio"):
+        length_match = list(arm["length_match_ratio"])
+    mit_params = arm.get("mitigation_params", {}) or {}
+    uncertainty_eps = args.uncertainty_filter_epsilon
+    if uncertainty_eps is None and arm.get("mitigation") == "pair_filter":
+        uncertainty_eps = float(mit_params.get("uncertainty_filter_epsilon", 0.0))
+    use_regularized = args.regularized or (arm.get("mitigation") == "uncertainty_reg")
+    reg_formulation = args.reg_formulation or mit_params.get("reg_formulation", "A")
+    reg_lambda = args.reg_lambda if args.reg_lambda is not None else float(mit_params.get("reg_lambda", 0.2))
+
+    print(
+        f"[train_round={round_n}] arm={arm.get('name', 'default')} seed={seed} "
+        f"pair={'random' if use_random else 'judge'} length_match={length_match} "
+        f"uncertainty_eps={uncertainty_eps} regularized={use_regularized}"
+    )
 
     data_dir = ROOT / cfg["outputs"]["data_dir"]
     train_rows = read_jsonl(data_dir / "train_prompts.jsonl")
@@ -336,6 +441,8 @@ def main() -> None:
         out_dir = Path(args.out_dir)
         if not out_dir.is_absolute():
             out_dir = ROOT / out_dir
+    elif arm.get("out_dir_template"):
+        out_dir = ROOT / arm["out_dir_template"].format(seed=seed, round=round_n)
     else:
         out_dir = ROOT / cfg["outputs"]["per_round_dir_template"].format(round=round_n)
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -381,7 +488,7 @@ def main() -> None:
         )
 
     # Pair construction: judge-derived (main trajectory) or random (control).
-    if args.random_preferences:
+    if use_random:
         # Stable per-round seed so different rounds produce different shuffles
         # while remaining deterministic.
         pair_construction_mode = "random"
@@ -391,6 +498,44 @@ def main() -> None:
         pairs = _build_judge_preference_pairs(by_prompt, ranked_per_prompt)
     print(f"[train_round={round_n}] pair_construction_mode={pair_construction_mode}")
 
+    # Optional length-bias control: drop preference pairs whose chosen/rejected
+    # token-length ratio is outside [LO, HI]. Applied AFTER pair construction.
+    num_pairs_pre_length_filter: int | None = None
+    length_match_ratio: tuple[float, float] | None = None
+    if length_match is not None:
+        lo, hi = float(length_match[0]), float(length_match[1])
+        length_match_ratio = (lo, hi)
+        num_pairs_pre_length_filter = len(pairs)
+        pairs = _filter_length_matched(pairs, lo, hi)
+        print(
+            f"[train_round={round_n}] length filter [{lo}, {hi}]: "
+            f"{num_pairs_pre_length_filter} -> {len(pairs)} pairs"
+        )
+        if len(pairs) < 4:
+            raise SystemExit(
+                f"[train_round={round_n}] length-filter sanity abort: only "
+                f"{len(pairs)} pairs survive the [{lo}, {hi}] length-ratio filter; "
+                f"need at least 4. Increase --limit or widen the ratio."
+            )
+
+    # Mitigation 1 (data-level): drop pairs that would push the policy toward
+    # LESS uncertainty. Applied AFTER length filtering.
+    uncertainty_filter_stats: dict | None = None
+    if uncertainty_eps is not None:
+        pairs, uncertainty_filter_stats = filter_uncertainty_preserving_pairs(pairs, float(uncertainty_eps))
+        print(
+            f"[train_round={round_n}] uncertainty filter (eps={uncertainty_eps}): "
+            f"{uncertainty_filter_stats['num_pairs_pre_uncertainty_filter']} -> "
+            f"{uncertainty_filter_stats['num_pairs_post_uncertainty_filter']} pairs "
+            f"(dropped {uncertainty_filter_stats['num_dropped']})"
+        )
+        if len(pairs) < 4:
+            raise SystemExit(
+                f"[train_round={round_n}] uncertainty-filter sanity abort: only "
+                f"{len(pairs)} pairs survive the eps={uncertainty_eps} filter; "
+                f"need at least 4. Increase --limit or widen epsilon."
+            )
+
     pairs_path = out_dir / "preference_pairs.jsonl"
     write_jsonl(pairs_path, pairs)
     print(f"[train_round={round_n}] wrote {pairs_path} ({len(pairs)} pairs)")
@@ -399,16 +544,20 @@ def main() -> None:
     write_jsonl(judge_examples_path, judge_example_rows)
     print(f"[train_round={round_n}] wrote {judge_examples_path} ({len(judge_example_rows)} rows)")
 
-    diag_path = out_dir / "preference_diagnostics.json"
-    write_json(
-        diag_path,
-        _preference_diagnostics(
-            pairs,
-            judge_example_rows,
-            judge.parse_failures,
-            pair_construction_mode=pair_construction_mode,
-        ),
+    diag = _preference_diagnostics(
+        pairs,
+        judge_example_rows,
+        judge.parse_failures,
+        pair_construction_mode=pair_construction_mode,
     )
+    if length_match_ratio is not None:
+        diag["length_match_ratio_lo"] = length_match_ratio[0]
+        diag["length_match_ratio_hi"] = length_match_ratio[1]
+        diag["num_pairs_pre_length_filter"] = num_pairs_pre_length_filter
+    if uncertainty_filter_stats is not None:
+        diag["uncertainty_filter"] = uncertainty_filter_stats
+    diag_path = out_dir / "preference_diagnostics.json"
+    write_json(diag_path, diag)
     print(f"[train_round={round_n}] wrote {diag_path}")
 
     # DPO step (mock skips real training; both paths write train_metadata.json).
@@ -419,16 +568,32 @@ def main() -> None:
         if prev_adapter.exists():
             reference_adapter_path = prev_adapter
 
-    result = run_one_dpo_round(
-        base_model_name=cfg["base_model"]["hf_id"],
-        reference_adapter_path=reference_adapter_path,
-        preference_pairs_jsonl=pairs_path,
-        output_adapter_dir=adapter_dir,
-        hparams=cfg["dpo"],
-        lora_config=cfg["lora"],
-        seed=seed,
-        mock=args.mock,
-    )
+    if use_regularized:
+        # Mitigation 2: route through the standalone uncertainty-regularized loop.
+        from complexity_theater.regularized_dpo import run_one_regularized_dpo_round
+
+        result = run_one_regularized_dpo_round(
+            base_model_name=cfg["base_model"]["hf_id"],
+            reference_adapter_path=reference_adapter_path,
+            preference_pairs_jsonl=pairs_path,
+            output_adapter_dir=adapter_dir,
+            hparams=cfg["dpo"],
+            lora_config=cfg["lora"],
+            reg_config={"reg_formulation": reg_formulation, "reg_lambda": reg_lambda},
+            seed=seed,
+            mock=args.mock,
+        )
+    else:
+        result = run_one_dpo_round(
+            base_model_name=cfg["base_model"]["hf_id"],
+            reference_adapter_path=reference_adapter_path,
+            preference_pairs_jsonl=pairs_path,
+            output_adapter_dir=adapter_dir,
+            hparams=cfg["dpo"],
+            lora_config=cfg["lora"],
+            seed=seed,
+            mock=args.mock,
+        )
     print(f"[train_round={round_n}] DPO: {result}")
 
 

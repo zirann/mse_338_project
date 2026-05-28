@@ -1,0 +1,11 @@
+# PART I (optional appendix): length-matched judge DPO. Isolates the
+# judge-attributable signal under the same length control as the random arm.
+base_config: configs/experiment.yaml
+
+arm:
+  name: judge_length_matched
+  pair_construction: judge
+  length_match_ratio: [0.8, 1.2]
+  mitigation: none
+  mitigation_params: {}
+  out_dir_template: outputs/judge_length_matched/seed{seed}

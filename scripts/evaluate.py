@@ -25,7 +25,8 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
 from complexity_theater import appearance, substance  # noqa: E402
-from complexity_theater.io_utils import read_jsonl, read_yaml, write_json, write_jsonl  # noqa: E402
+from complexity_theater.io_utils import read_arm_config, read_jsonl, write_json, write_jsonl  # noqa: E402
+from complexity_theater.uncertainty import uncertainty_score  # noqa: E402
 from complexity_theater.judge import Judge  # noqa: E402
 
 
@@ -137,9 +138,21 @@ def parse_args() -> argparse.Namespace:
         default=None,
         help=(
             "Override the default per-round output directory. When set, the adapter is "
-            "loaded from <out_dir>/adapter and metrics + responses are written there. "
-            "The round-0 baseline used for `judge_win_rate_vs_round_0` is always read "
-            "from the config template (outputs/round_0/eval_responses.jsonl)."
+            "loaded from <out_dir>/adapter and metrics + responses are written there."
+        ),
+    )
+    p.add_argument(
+        "--seed",
+        type=int,
+        default=None,
+        help="Override cfg.seed (used for the judge RNG and reproducibility).",
+    )
+    p.add_argument(
+        "--baseline_dir",
+        default=None,
+        help=(
+            "Directory whose eval_responses.jsonl is the baseline for judge_win_rate. "
+            "Defaults to outputs/baseline if present, else the round-0 template dir."
         ),
     )
     return p.parse_args()
@@ -151,8 +164,9 @@ def _mean(xs: list[float]) -> float:
 
 def main() -> None:
     args = parse_args()
-    cfg = read_yaml(args.config)
+    cfg = read_arm_config(args.config)
     round_n = int(args.round)
+    seed = int(args.seed) if args.seed is not None else int(cfg.get("seed", 42))
 
     data_dir = ROOT / cfg["outputs"]["data_dir"]
     eval_path = data_dir / "eval_prompts.jsonl"
@@ -204,7 +218,7 @@ def main() -> None:
     judge = Judge(
         model_name=cfg["judge"]["hf_id"],
         device=cfg["judge"]["device"],
-        seed=int(cfg.get("seed", 42)),
+        seed=seed,
         mock=args.mock,
     )
     fact_scores: list[float] = []
@@ -226,6 +240,10 @@ def main() -> None:
             [a["reasoning_narration_density"] for a in app_per]
         ),
         "hedge_density": _mean([a["hedge_density"] for a in app_per]),
+        "confidence_marker_density": _mean(
+            [a["confidence_marker_density"] for a in app_per]
+        ),
+        "uncertainty_score": _mean([uncertainty_score(r["response"]) for r in responses]),
         "epistemic_marker_density": _mean(
             [a["epistemic_marker_density"] for a in app_per]
         ),
@@ -235,10 +253,19 @@ def main() -> None:
 
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    # Composite (round > 0): judge_win_rate_vs_round_0
+    # Composite (round > 0): judge_win_rate vs the baseline arm.
     winrate_rows: list[dict] = []
     if round_n > 0:
-        r0_path = ROOT / cfg["outputs"]["per_round_dir_template"].format(round=0) / "eval_responses.jsonl"
+        if args.baseline_dir:
+            baseline_dir = Path(args.baseline_dir)
+            if not baseline_dir.is_absolute():
+                baseline_dir = ROOT / baseline_dir
+        elif (ROOT / "outputs" / "baseline").exists():
+            baseline_dir = ROOT / "outputs" / "baseline"
+        else:
+            baseline_dir = ROOT / cfg["outputs"]["per_round_dir_template"].format(round=0)
+        r0_path = baseline_dir / "eval_responses.jsonl"
+        print(f"[evaluate round={round_n}] baseline for win-rate: {r0_path}")
         if r0_path.exists():
             r0_rows = read_jsonl(r0_path)
             r0_by_id = {r["prompt_id"]: r["response"] for r in r0_rows}

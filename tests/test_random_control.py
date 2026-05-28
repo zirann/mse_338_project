@@ -104,3 +104,44 @@ def test_preference_diagnostics_stamps_pair_construction_mode() -> None:
         judge_parse_failures_total=0,
     )
     assert diag_default["pair_construction_mode"] == "judge"
+
+
+def _pair(chosen_len: int, rejected_len: int, pid: str = "p") -> dict:
+    return {
+        "prompt_id": pid,
+        "prompt": "Q?",
+        "chosen": " ".join(["w"] * chosen_len),
+        "rejected": " ".join(["w"] * rejected_len),
+    }
+
+
+def test_filter_length_matched_keeps_pairs_in_band() -> None:
+    """Pairs with chosen-to-rejected length ratio inside [0.8, 1.2] are kept."""
+    tr = _load_train_round_module()
+    pairs = [
+        _pair(10, 10),   # ratio 1.0
+        _pair(8, 10),    # ratio 0.8 (lower bound inclusive)
+        _pair(12, 10),   # ratio 1.2 (upper bound inclusive)
+        _pair(15, 10),   # ratio 1.5 (out)
+        _pair(5, 10),    # ratio 0.5 (out)
+        _pair(100, 200),  # ratio 0.5 (out)
+    ]
+    kept = tr._filter_length_matched(pairs, 0.8, 1.2)
+    assert len(kept) == 3
+    for p in kept:
+        ratio = len(p["chosen"].split()) / len(p["rejected"].split())
+        assert 0.8 <= ratio <= 1.2
+
+
+def test_filter_length_matched_degenerate_inputs() -> None:
+    """Empty list -> empty list; zero-length rejected dropped; bad bounds raise."""
+    tr = _load_train_round_module()
+    assert tr._filter_length_matched([], 0.8, 1.2) == []
+
+    bad = [{"prompt_id": "p", "prompt": "Q?", "chosen": "hello world", "rejected": ""}]
+    assert tr._filter_length_matched(bad, 0.8, 1.2) == []
+
+    import pytest
+
+    with pytest.raises(ValueError):
+        tr._filter_length_matched([], 1.2, 0.8)

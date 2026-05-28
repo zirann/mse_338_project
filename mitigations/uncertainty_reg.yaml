@@ -1,0 +1,18 @@
+# PART II-2 (recommended): loss-level mitigation. Adds a differentiable
+# uncertainty-preservation penalty to the DPO loss via the standalone
+# regularized DPO loop:
+#   L = L_DPO + reg_lambda * penalty
+# Formulation A (default): one-sided reference-anchored uncertainty-token-mass
+# floor. See src/complexity_theater/regularized_dpo.py for B and C.
+# Applied on top of the random-preference base.
+base_config: configs/experiment.yaml
+
+arm:
+  name: mit_uncertreg
+  pair_construction: random
+  length_match_ratio: null
+  mitigation: uncertainty_reg
+  mitigation_params:
+    reg_formulation: A      # A (mass floor) | B (chosen hedge logprob) | C (entropy floor)
+    reg_lambda: 0.2
+  out_dir_template: outputs/mit_uncertreg/seed{seed}

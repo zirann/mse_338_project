@@ -26,17 +26,23 @@ from complexity_theater.io_utils import read_json, read_yaml, write_json  # noqa
 APPEARANCE_METRICS = (
     "length",
     "structural_complexity",
-    "reasoning_narration_density",
     "hedge_density",
+    "confidence_marker_density",
 )
 SUBSTANCE_METRICS = ("factuality", "information_density")
 COMPOSITE_METRIC = "judge_win_rate_vs_round_0"
 # Metrics that stay in trajectory.json for back-compat / appendix analysis but
-# are NOT plotted on the headline figure. `epistemic_marker_density` is a wide
-# union of all 7 lexicon subclasses; after the round-1 smoke we found it
-# averages opposing signals (reasoning narration UP, hedges DOWN) and is
-# superseded by the two new headline metrics.
-EXTRA_TRAJECTORY_METRICS = ("epistemic_marker_density",)
+# are NOT plotted on the headline figure.
+# - `reasoning_narration_density`: pre-registered prediction, falsified by the
+#   main trajectory (non-monotone V-shape) and the random-preference control.
+#   Kept for appendix analysis; not headline.
+# - `epistemic_marker_density`: wide union of all 7 lexicon subclasses; averages
+#   opposing signals (hedge DOWN, confidence markers UP) and obscures the
+#   directional pair we now use as the headline. Kept for back-compat.
+EXTRA_TRAJECTORY_METRICS = (
+    "reasoning_narration_density",
+    "epistemic_marker_density",
+)
 
 
 def parse_args() -> argparse.Namespace:
@@ -90,8 +96,8 @@ def _render_headline(trajectory: dict, fig_path: Path) -> bool:
     colors = {
         "length": "#d62728",
         "structural_complexity": "#ff7f0e",
-        "reasoning_narration_density": "#e377c2",
         "hedge_density": "#bcbd22",
+        "confidence_marker_density": "#e377c2",
         "factuality": "#1f77b4",
         "information_density": "#2ca02c",
         COMPOSITE_METRIC: "#000000",
@@ -99,8 +105,8 @@ def _render_headline(trajectory: dict, fig_path: Path) -> bool:
     label_pretty = {
         "length": "length (app.)",
         "structural_complexity": "structural complexity (app.)",
-        "reasoning_narration_density": "reasoning narration / 100 tok (app.)",
         "hedge_density": "hedge density / 100 tok (app.)",
+        "confidence_marker_density": "confidence markers / 100 tok (app.)",
         "factuality": "factuality (sub.)",
         "information_density": "information density (sub.)",
         COMPOSITE_METRIC: "judge win-rate vs round 0",
