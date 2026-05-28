@@ -1,11 +1,13 @@
 #!/usr/bin/env python3
 """Run one training round: candidates -> judge ranks -> preference pairs -> DPO.
 
-Outputs in `outputs/round_<N>/`:
-- `candidates.jsonl`     all K * n_train candidate generations
-- `preference_pairs.jsonl` chosen/rejected pairs in TRL DPO format
-- `adapter/`             LoRA adapter from this round (real path), or
-                         `train_metadata.json` only (mock path)
+Outputs in `outputs/round_<N>/` (or `--out_dir <path>` when given):
+- `candidates.jsonl`        all K * n_train candidate generations
+- `preference_pairs.jsonl`  chosen/rejected pairs in TRL DPO format
+- `judge_examples.jsonl`    judge ranking diagnostics
+- `preference_diagnostics.json`  aggregate appearance-metric deltas + pair_construction_mode
+- `adapter/`                LoRA adapter from this round (real path), or
+                            `train_metadata.json` only (mock path)
 
 `--mock` skips real model generation, real judge calls, and real DPO. It uses
 deterministic K mock candidates whose lengths increase with k_index, so the
@@ -13,10 +15,20 @@ mock judge (which ranks by length) produces a stable top-1/bottom-1 split that
 exercises the full preference-pair pipeline.
 
 `--limit N` caps the training set to the first N prompts.
+
+`--random_preferences` is the random-pair DPO control. Candidate generation
+and judge ranking still run (so `judge_examples.jsonl` and the rank
+diagnostics are preserved), but `preference_pairs.jsonl` is constructed by
+picking two distinct candidates per prompt UNIFORMLY AT RANDOM (deterministic
+under `cfg.seed`), independent of the judge's verdict. Used to test whether
+trajectory effects are judge-driven or generic DPO/LoRA artifacts. Pair this
+with `--out_dir outputs/control_random_round_1` so the control does not
+overwrite the main trajectory.
 """
 from __future__ import annotations
 
 import argparse
+import random
 import sys
 from collections import defaultdict
 from pathlib import Path
@@ -132,10 +144,73 @@ def _mean(xs: list[float]) -> float:
     return sum(xs) / len(xs) if xs else 0.0
 
 
+def _build_judge_preference_pairs(
+    by_prompt: dict[str, list[dict]],
+    ranked_per_prompt: dict[str, list[int]],
+) -> list[dict]:
+    """Construct (top-1, bottom-1) preference pairs from judge rankings.
+
+    Used by the main DPO trajectory. Degenerate pairs (identical chosen and
+    rejected strings) are dropped.
+    """
+    pairs: list[dict] = []
+    for pid, cands in by_prompt.items():
+        ranked = ranked_per_prompt.get(pid, [])
+        if len(ranked) < 2:
+            continue
+        cands_sorted = sorted(cands, key=lambda x: x["k_index"])
+        top = cands_sorted[ranked[0]]
+        bot = cands_sorted[ranked[-1]]
+        if top["response"] == bot["response"]:
+            continue
+        pairs.append(
+            {
+                "prompt_id": pid,
+                "prompt": top["question"],
+                "chosen": top["response"],
+                "rejected": bot["response"],
+            }
+        )
+    return pairs
+
+
+def _build_random_preference_pairs(
+    by_prompt: dict[str, list[dict]],
+    seed: int,
+) -> list[dict]:
+    """Random-control pair construction: per prompt, pick two distinct
+    candidate indices uniformly at random; the first is `chosen`, the second
+    is `rejected`. Deterministic given `seed`. Used by the
+    `--random_preferences` ablation to test whether the main trajectory's
+    appearance shift is judge-driven or a generic DPO/LoRA effect.
+    """
+    rng = random.Random(seed)
+    pairs: list[dict] = []
+    # Sort prompts for reproducibility independent of dict iteration order.
+    for pid in sorted(by_prompt):
+        cands = sorted(by_prompt[pid], key=lambda x: x["k_index"])
+        if len(cands) < 2:
+            continue
+        idx_chosen, idx_rejected = rng.sample(range(len(cands)), 2)
+        chosen, rejected = cands[idx_chosen], cands[idx_rejected]
+        if chosen["response"] == rejected["response"]:
+            continue
+        pairs.append(
+            {
+                "prompt_id": pid,
+                "prompt": chosen["question"],
+                "chosen": chosen["response"],
+                "rejected": rejected["response"],
+            }
+        )
+    return pairs
+
+
 def _preference_diagnostics(
     pairs: list[dict],
     judge_examples: list[dict],
     judge_parse_failures_total: int,
+    pair_construction_mode: str = "judge",
 ) -> dict:
     """Summary stats over the preference pairs the judge just produced.
 
@@ -168,6 +243,7 @@ def _preference_diagnostics(
     )
     pf_call_total = 2 * len(judge_examples)
     return {
+        "pair_construction_mode": pair_construction_mode,
         "num_pairs": len(pairs),
         "num_rank_calls": pf_call_total,
         "mean_length_chosen": _mean(chosen_len),
@@ -202,6 +278,16 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--round", type=int, required=True, help="Round number; must be >= 1.")
     p.add_argument("--limit", type=int, default=None, help="Cap train prompts (for smoke).")
     p.add_argument("--mock", action="store_true", help="Skip real generation + judge + DPO.")
+    p.add_argument(
+        "--random_preferences",
+        action="store_true",
+        help="Random-control: form preference pairs by uniform random selection rather than judge ranking.",
+    )
+    p.add_argument(
+        "--out_dir",
+        default=None,
+        help="Override the default per-round output directory (e.g. outputs/control_random_round_1).",
+    )
     return p.parse_args()
 
 
@@ -246,13 +332,19 @@ def main() -> None:
                 }
             )
 
-    out_dir = ROOT / cfg["outputs"]["per_round_dir_template"].format(round=round_n)
+    if args.out_dir:
+        out_dir = Path(args.out_dir)
+        if not out_dir.is_absolute():
+            out_dir = ROOT / out_dir
+    else:
+        out_dir = ROOT / cfg["outputs"]["per_round_dir_template"].format(round=round_n)
     out_dir.mkdir(parents=True, exist_ok=True)
     candidates_path = out_dir / "candidates.jsonl"
     write_jsonl(candidates_path, candidates)
     print(f"[train_round={round_n}] wrote {candidates_path} ({len(candidates)} candidates)")
 
-    # Judge-rank per prompt; form (top-1, bottom-1) preference pairs.
+    # Judge-rank per prompt. Always run (we want judge_examples.jsonl for
+    # diagnostics even when `--random_preferences` discards the ranking).
     judge = Judge(
         model_name=cfg["judge"]["hf_id"],
         device=cfg["judge"]["device"],
@@ -264,18 +356,14 @@ def main() -> None:
     for c in candidates:
         by_prompt[c["prompt_id"]].append(c)
 
-    pairs: list[dict] = []
+    ranked_per_prompt: dict[str, list[int]] = {}
     judge_example_rows: list[dict] = []
     for pid, cands in by_prompt.items():
         cands.sort(key=lambda x: x["k_index"])
         ranked, diag = judge.rank_candidates_with_diagnostics(
             cands[0]["question"], [c["response"] for c in cands]
         )
-        if len(ranked) < 2:
-            continue
-        top = cands[ranked[0]]
-        bot = cands[ranked[-1]]
-        # Always record the judge example, even on degenerate (identical) cases.
+        ranked_per_prompt[pid] = ranked
         judge_example_rows.append(
             {
                 "prompt_id": pid,
@@ -291,16 +379,17 @@ def main() -> None:
                 "mock": diag["mock"],
             }
         )
-        if top["response"] == bot["response"]:
-            continue
-        pairs.append(
-            {
-                "prompt_id": pid,
-                "prompt": top["question"],
-                "chosen": top["response"],
-                "rejected": bot["response"],
-            }
-        )
+
+    # Pair construction: judge-derived (main trajectory) or random (control).
+    if args.random_preferences:
+        # Stable per-round seed so different rounds produce different shuffles
+        # while remaining deterministic.
+        pair_construction_mode = "random"
+        pairs = _build_random_preference_pairs(by_prompt, seed=seed + 1000 * round_n)
+    else:
+        pair_construction_mode = "judge"
+        pairs = _build_judge_preference_pairs(by_prompt, ranked_per_prompt)
+    print(f"[train_round={round_n}] pair_construction_mode={pair_construction_mode}")
 
     pairs_path = out_dir / "preference_pairs.jsonl"
     write_jsonl(pairs_path, pairs)
@@ -311,7 +400,15 @@ def main() -> None:
     print(f"[train_round={round_n}] wrote {judge_examples_path} ({len(judge_example_rows)} rows)")
 
     diag_path = out_dir / "preference_diagnostics.json"
-    write_json(diag_path, _preference_diagnostics(pairs, judge_example_rows, judge.parse_failures))
+    write_json(
+        diag_path,
+        _preference_diagnostics(
+            pairs,
+            judge_example_rows,
+            judge.parse_failures,
+            pair_construction_mode=pair_construction_mode,
+        ),
+    )
     print(f"[train_round={round_n}] wrote {diag_path}")
 
     # DPO step (mock skips real training; both paths write train_metadata.json).

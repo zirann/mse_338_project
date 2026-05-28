@@ -65,8 +65,13 @@ def mock_response(question: str, round_n: int) -> str:
 # Real generation (A100 path; not exercised locally)
 # ---------------------------------------------------------------------------
 
-def _real_load_policy(cfg: dict, round_n: int):
-    """Load base model + optional round adapter for evaluation."""
+def _real_load_policy(cfg: dict, round_n: int, adapter_dir: Path | None = None):
+    """Load base model + optional round adapter for evaluation.
+
+    When `adapter_dir` is provided, the adapter is loaded from that exact
+    directory (used by the `--out_dir` override for the random-preference
+    control). Otherwise the default per-round template path is used.
+    """
     from complexity_theater.model_factory import (
         load_model_with_optional_adapter,
         load_tokenizer,
@@ -77,8 +82,11 @@ def _real_load_policy(cfg: dict, round_n: int):
     tokenizer = load_tokenizer(cfg["base_model"]["hf_id"])
     adapter_path = None
     if round_n > 0:
-        adapter_path = ROOT / cfg["outputs"]["per_round_dir_template"].format(round=round_n) / "adapter"
-        adapter_path = str(adapter_path) if adapter_path.exists() else None
+        if adapter_dir is not None:
+            ap = Path(adapter_dir)
+        else:
+            ap = ROOT / cfg["outputs"]["per_round_dir_template"].format(round=round_n) / "adapter"
+        adapter_path = str(ap) if ap.exists() else None
     model = load_model_with_optional_adapter(cfg["base_model"]["hf_id"], adapter_path, device)
     return tokenizer, model, device
 
@@ -124,6 +132,16 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--round", type=int, required=True, help="Round number (0 = baseline).")
     p.add_argument("--limit", type=int, default=None, help="Cap eval prompts (for smoke).")
     p.add_argument("--mock", action="store_true", help="Skip real model + judge calls.")
+    p.add_argument(
+        "--out_dir",
+        default=None,
+        help=(
+            "Override the default per-round output directory. When set, the adapter is "
+            "loaded from <out_dir>/adapter and metrics + responses are written there. "
+            "The round-0 baseline used for `judge_win_rate_vs_round_0` is always read "
+            "from the config template (outputs/round_0/eval_responses.jsonl)."
+        ),
+    )
     return p.parse_args()
 
 
@@ -143,13 +161,25 @@ def main() -> None:
         eval_rows = eval_rows[: args.limit]
     print(f"[evaluate round={round_n}] {len(eval_rows)} prompts mock={args.mock}")
 
+    if args.out_dir:
+        out_dir = Path(args.out_dir)
+        if not out_dir.is_absolute():
+            out_dir = ROOT / out_dir
+    else:
+        out_dir = ROOT / cfg["outputs"]["per_round_dir_template"].format(round=round_n)
+
     gen_config = None
     if args.mock:
         tokenizer = model = device = None
     else:
-        tokenizer, model, device = _real_load_policy(cfg, round_n)
+        # When --out_dir is set (e.g. random-preference control), load the
+        # adapter from <out_dir>/adapter instead of the default template path.
+        adapter_dir_override = out_dir / "adapter" if args.out_dir else None
+        tokenizer, model, device = _real_load_policy(cfg, round_n, adapter_dir=adapter_dir_override)
         gen_config = _build_eval_sampling_config(tokenizer, cfg["generation"])
         print(f"[evaluate round={round_n}] generation config: {gen_config.to_dict()}")
+        if adapter_dir_override is not None:
+            print(f"[evaluate round={round_n}] adapter override: {adapter_dir_override}")
 
     responses: list[dict] = []
     for row in eval_rows:
@@ -203,7 +233,6 @@ def main() -> None:
         "information_density": _mean([s["information_density"] for s in sub_per]),
     }
 
-    out_dir = ROOT / cfg["outputs"]["per_round_dir_template"].format(round=round_n)
     out_dir.mkdir(parents=True, exist_ok=True)
 
     # Composite (round > 0): judge_win_rate_vs_round_0
