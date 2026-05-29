@@ -30,6 +30,13 @@ DEFAULT_HPARAMS: dict[str, Any] = {
     "max_length": 512,
     "max_prompt_length": 256,
     "abort_kl_threshold": 5.0,
+    # Saturation guard: a run that drives the implicit-reward margin this high
+    # or the loss this low has over-optimized / memorized the pairs, which
+    # breaks the matched-control identification (the optimization-intrinsic
+    # drift is no longer common across arms). Such a run fails loud AFTER its
+    # adapter + train_metadata.json are written, so the curve is inspectable.
+    "saturation_rewards_margins_max": 3.0,
+    "saturation_loss_min": 0.05,
 }
 
 DEFAULT_LORA: dict[str, Any] = {
@@ -313,6 +320,22 @@ def run_one_dpo_round(
     }
     with (adapter_dir / "train_metadata.json").open("w", encoding="utf-8") as f:
         json.dump(metadata, f, indent=2)
+
+    # Fail-loud saturation guard. Checked AFTER metadata is written so the
+    # train_curve survives for inspection. A saturated run is not a valid
+    # member of the matched-control design (see identification note in
+    # DEFAULT_HPARAMS).
+    sat_margin = float(hp.get("saturation_rewards_margins_max", 3.0))
+    sat_loss = float(hp.get("saturation_loss_min", 0.05))
+    margin_sat = rewards_margins_final is not None and rewards_margins_final > sat_margin
+    loss_sat = loss_last is not None and loss_last < sat_loss
+    if margin_sat or loss_sat:
+        raise RuntimeError(
+            f"DPO saturation guard tripped (adapter + metadata saved at {adapter_dir}): "
+            f"rewards_margins_final={rewards_margins_final} (max {sat_margin}), "
+            f"loss_last={loss_last} (min {sat_loss}). This run over-optimized and is "
+            f"not a valid matched-control arm; reduce epochs/lr."
+        )
 
     return {
         "adapter_path": str(adapter_dir),
