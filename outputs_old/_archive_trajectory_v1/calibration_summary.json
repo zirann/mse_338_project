@@ -1,0 +1,160 @@
+{
+  "config": "configs/experiment.yaml",
+  "manual_factuality_path": null,
+  "arms": [
+    {
+      "arm": "R0_baseline",
+      "arm_dir": "/Users/zirann/mini_redteam_poc/outputs/round_0",
+      "n": 20,
+      "hedge_density_mean": 0.2024005616174726,
+      "hedge_density_se": 0.08628112459686929,
+      "confidence_marker_density_mean": 0.03048780487804878,
+      "confidence_marker_density_se": 0.030487804878048776,
+      "llm_factuality_mean": 0.3,
+      "llm_factuality_se": 0.08429272304235245
+    },
+    {
+      "arm": "main_R1",
+      "arm_dir": "/Users/zirann/mini_redteam_poc/outputs/round_1",
+      "n": 20,
+      "hedge_density_mean": 0.15089543595064528,
+      "hedge_density_se": 0.05998887611964845,
+      "confidence_marker_density_mean": 0.0,
+      "confidence_marker_density_se": 0.0,
+      "llm_factuality_mean": 0.4,
+      "llm_factuality_se": 0.07779866052154992
+    },
+    {
+      "arm": "main_R2",
+      "arm_dir": "/Users/zirann/mini_redteam_poc/outputs/round_2",
+      "n": 20,
+      "hedge_density_mean": 0.11783334304754134,
+      "hedge_density_se": 0.06919738634541796,
+      "confidence_marker_density_mean": 0.03164556962025317,
+      "confidence_marker_density_se": 0.03164556962025318,
+      "llm_factuality_mean": 0.275,
+      "llm_factuality_se": 0.08487607064668495
+    },
+    {
+      "arm": "main_R3",
+      "arm_dir": "/Users/zirann/mini_redteam_poc/outputs/round_3",
+      "n": 20,
+      "hedge_density_mean": 0.06176605154796402,
+      "hedge_density_se": 0.04252470801232173,
+      "confidence_marker_density_mean": 0.03125,
+      "confidence_marker_density_se": 0.03125,
+      "llm_factuality_mean": 0.45,
+      "llm_factuality_se": 0.0881087844357011
+    }
+  ],
+  "correctness_conditioned": [
+    {
+      "arm": "R0_baseline",
+      "label_source": "llm_factuality_fallback",
+      "breakdown": {
+        "CORRECT": {
+          "n": 3,
+          "hedge_density_mean": 0.0,
+          "hedge_density_se": 0.0,
+          "confidence_marker_density_mean": 0.0,
+          "confidence_marker_density_se": 0.0
+        },
+        "PARTIAL": {
+          "n": 6,
+          "hedge_density_mean": 0.09980039920159679,
+          "hedge_density_se": 0.09980039920159679,
+          "confidence_marker_density_mean": 0.1016260162601626,
+          "confidence_marker_density_se": 0.10162601626016259
+        },
+        "INCORRECT": {
+          "n": 11,
+          "hedge_density_mean": 0.3135644397399883,
+          "hedge_density_se": 0.1416811573163438,
+          "confidence_marker_density_mean": 0.0,
+          "confidence_marker_density_se": 0.0
+        }
+      }
+    },
+    {
+      "arm": "main_R1",
+      "label_source": "llm_factuality_fallback",
+      "breakdown": {
+        "CORRECT": {
+          "n": 3,
+          "hedge_density_mean": 0.2032520325203252,
+          "hedge_density_se": 0.20325203252032517,
+          "confidence_marker_density_mean": 0.0,
+          "confidence_marker_density_se": 0.0
+        },
+        "PARTIAL": {
+          "n": 10,
+          "hedge_density_mean": 0.17870346090295697,
+          "hedge_density_se": 0.09103980183517453,
+          "confidence_marker_density_mean": 0.0,
+          "confidence_marker_density_se": 0.0
+        },
+        "INCORRECT": {
+          "n": 7,
+          "hedge_density_mean": 0.08873114463176575,
+          "hedge_density_se": 0.08873114463176573,
+          "confidence_marker_density_mean": 0.0,
+          "confidence_marker_density_se": 0.0
+        }
+      }
+    },
+    {
+      "arm": "main_R2",
+      "label_source": "llm_factuality_fallback",
+      "breakdown": {
+        "CORRECT": {
+          "n": 3,
+          "hedge_density_mean": 0.0,
+          "hedge_density_se": 0.0,
+          "confidence_marker_density_mean": 0.2109704641350211,
+          "confidence_marker_density_se": 0.2109704641350211
+        },
+        "PARTIAL": {
+          "n": 5,
+          "hedge_density_mean": 0.11695906432748537,
+          "hedge_density_se": 0.11695906432748537,
+          "confidence_marker_density_mean": 0.0,
+          "confidence_marker_density_se": 0.0
+        },
+        "INCORRECT": {
+          "n": 12,
+          "hedge_density_mean": 0.14765596160944996,
+          "hedge_density_se": 0.10637365231687364,
+          "confidence_marker_density_mean": 0.0,
+          "confidence_marker_density_se": 0.0
+        }
+      }
+    },
+    {
+      "arm": "main_R3",
+      "label_source": "llm_factuality_fallback",
+      "breakdown": {
+        "CORRECT": {
+          "n": 5,
+          "hedge_density_mean": 0.12048192771084339,
+          "hedge_density_se": 0.12048192771084339,
+          "confidence_marker_density_mean": 0.125,
+          "confidence_marker_density_se": 0.125
+        },
+        "PARTIAL": {
+          "n": 8,
+          "hedge_density_mean": 0.0,
+          "hedge_density_se": 0.0,
+          "confidence_marker_density_mean": 0.0,
+          "confidence_marker_density_se": 0.0
+        },
+        "INCORRECT": {
+          "n": 7,
+          "hedge_density_mean": 0.09041591320072333,
+          "hedge_density_se": 0.09041591320072334,
+          "confidence_marker_density_mean": 0.0,
+          "confidence_marker_density_se": 0.0
+        }
+      }
+    }
+  ]
+}

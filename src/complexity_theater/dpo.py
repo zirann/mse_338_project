@@ -254,6 +254,30 @@ def run_one_dpo_round(
         except Exception:
             pass
 
+    # Per-step trajectory so we can confirm the policy actually moved (loss
+    # decreasing, margins rising) rather than only inspecting the final value.
+    train_curve = []
+    for entry in trainer.state.log_history:
+        if "loss" in entry:
+            train_curve.append(
+                {
+                    "step": entry.get("step"),
+                    "loss": float(entry["loss"]),
+                    "rewards_margins": (
+                        float(entry["rewards/margins"]) if "rewards/margins" in entry else None
+                    ),
+                }
+            )
+    loss_first = train_curve[0]["loss"] if train_curve else None
+    loss_last = train_curve[-1]["loss"] if train_curve else None
+    _margin_vals = [c["rewards_margins"] for c in train_curve if c["rewards_margins"] is not None]
+    rewards_margins_max = max(_margin_vals) if _margin_vals else None
+    rewards_margins_final = _margin_vals[-1] if _margin_vals else None
+    print(
+        f"[dpo] curve: {len(train_curve)} logged steps; "
+        f"loss {loss_first} -> {loss_last}; margins max={rewards_margins_max}"
+    )
+
     # KL abort sanity check (only when TRL actually reported it).
     if final_kl is not None and math.isfinite(final_kl):
         if final_kl > float(hp.get("abort_kl_threshold", 5.0)):
@@ -280,6 +304,12 @@ def run_one_dpo_round(
         "lora_norm_initial": lora_norm_initial,
         "lora_norm_final": lora_norm_final,
         "lora_norm_delta": lora_norm_delta,
+        "loss_first": loss_first,
+        "loss_last": loss_last,
+        "rewards_margins_max": rewards_margins_max,
+        "rewards_margins_final": rewards_margins_final,
+        "num_logged_steps": len(train_curve),
+        "train_curve": train_curve,
     }
     with (adapter_dir / "train_metadata.json").open("w", encoding="utf-8") as f:
         json.dump(metadata, f, indent=2)

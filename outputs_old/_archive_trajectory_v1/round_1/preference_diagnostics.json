@@ -1,0 +1,17 @@
+{
+  "num_pairs": 20,
+  "num_rank_calls": 40,
+  "mean_length_chosen": 161.3,
+  "mean_length_rejected": 163.0,
+  "mean_length_delta": -1.6999999999999886,
+  "mean_structural_complexity_chosen": 0.0,
+  "mean_structural_complexity_rejected": 0.0,
+  "mean_structural_complexity_delta": 0.0,
+  "mean_epistemic_marker_density_chosen": 0.40769947075603435,
+  "mean_epistemic_marker_density_rejected": 0.522798606634955,
+  "mean_epistemic_marker_density_delta": -0.11509913587892068,
+  "num_near_identical_pairs": 0,
+  "judge_parse_failures_rank_calls": 0,
+  "judge_parse_failure_rate_rank": 0.0,
+  "judge_parse_failures_total_instance": 0
+}

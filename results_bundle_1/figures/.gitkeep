@@ -1,0 +1,2 @@
+# Canonical figure output directory for the uncertainty-suppression project.
+# Populated by analysis/make_figures.py. Supersedes assets/figures/ (legacy).

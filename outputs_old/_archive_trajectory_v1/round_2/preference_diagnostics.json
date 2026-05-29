@@ -1,0 +1,23 @@
+{
+  "num_pairs": 20,
+  "num_rank_calls": 40,
+  "mean_length_chosen": 162.65,
+  "mean_length_rejected": 162.95,
+  "mean_length_delta": -0.29999999999998295,
+  "mean_structural_complexity_chosen": 0.0,
+  "mean_structural_complexity_rejected": 0.0,
+  "mean_structural_complexity_delta": 0.0,
+  "mean_reasoning_narration_density_chosen": 3.9922823022606577,
+  "mean_reasoning_narration_density_rejected": 4.229935133770317,
+  "mean_reasoning_narration_density_delta": -0.2376528315096591,
+  "mean_hedge_density_chosen": 0.1575404360087704,
+  "mean_hedge_density_rejected": 0.30783099970328837,
+  "mean_hedge_density_delta": -0.15029056369451796,
+  "mean_epistemic_marker_density_chosen": 4.363366440307977,
+  "mean_epistemic_marker_density_rejected": 4.754039066860937,
+  "mean_epistemic_marker_density_delta": -0.3906726265529601,
+  "num_near_identical_pairs": 0,
+  "judge_parse_failures_rank_calls": 0,
+  "judge_parse_failure_rate_rank": 0.0,
+  "judge_parse_failures_total_instance": 0
+}

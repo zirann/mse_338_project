@@ -1,0 +1,42 @@
+{
+  "status": "ok",
+  "base_model_name": "Qwen/Qwen3-0.6B",
+  "reference_adapter_path": "/content/mse_338_project/outputs/round_2/adapter",
+  "num_pairs": 20,
+  "hparams": {
+    "beta": 0.1,
+    "learning_rate": 5e-05,
+    "num_train_epochs": 1.0,
+    "per_device_train_batch_size": 4,
+    "gradient_accumulation_steps": 2,
+    "max_length": 512,
+    "max_prompt_length": 256,
+    "abort_kl_threshold": 5.0,
+    "num_rounds": 3
+  },
+  "lora": {
+    "r": 16,
+    "alpha": 32,
+    "dropout": 0.05,
+    "target_modules": [
+      "q_proj",
+      "k_proj",
+      "v_proj",
+      "o_proj",
+      "up_proj",
+      "down_proj",
+      "gate_proj"
+    ]
+  },
+  "seed": 42,
+  "train_loss": 0.6949,
+  "final_kl": null,
+  "rewards_chosen": 0.048671722412109375,
+  "rewards_rejected": 0.05111274868249893,
+  "rewards_margins": -0.002441023476421833,
+  "trainable_params": 10092544,
+  "total_params": 606142464,
+  "lora_norm_initial": 32.340143424667396,
+  "lora_norm_final": 45.73653462659578,
+  "lora_norm_delta": 13.396391201928381
+}

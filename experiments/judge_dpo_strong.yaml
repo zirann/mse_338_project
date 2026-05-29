@@ -1,0 +1,29 @@
+# Stronger-DPO diagnostic variant of the judge arm. Purpose: confirm the policy
+# can actually move before rerunning all arms. Same research question, same
+# pair construction (judge best/worst); only the optimization strength changes.
+#
+# Why these knobs (one family: optimization strength; beta left at 0.1 so the
+# KL constraint is not conflated):
+#   - learning_rate 5e-5 -> 1e-4: the audited runs barely updated; 2x lr.
+#   - num_train_epochs 1 -> 3: more passes over the (still small) pair set.
+#   - gradient_accumulation_steps 2 -> 1: doubles the number of optimizer steps.
+# Combined with --limit 80 (80 train prompts -> ~80 judge pairs, after a
+# re-prepare to an 80/80 split) this is ~10-15 optimizer steps/epoch x 3 epochs
+# instead of the ~2-3 total steps that produced rewards_margins ~ 0.
+#
+# The dpo block deep-merges over configs/experiment.yaml; only the three keys
+# below are overridden.
+base_config: configs/experiment.yaml
+
+dpo:
+  learning_rate: 1.0e-4
+  num_train_epochs: 3.0
+  gradient_accumulation_steps: 1
+
+arm:
+  name: judge_dpo_strong
+  pair_construction: judge
+  length_match_ratio: null
+  mitigation: none
+  mitigation_params: {}
+  out_dir_template: outputs/judge_dpo_strong/seed{seed}

@@ -1,0 +1,14 @@
+{
+  "round": 0,
+  "n_eval": 20,
+  "mock": false,
+  "length": 164.25,
+  "structural_complexity": 0.0,
+  "reasoning_narration_density": 4.705049366767997,
+  "hedge_density": 0.2024005616174726,
+  "epistemic_marker_density": 5.156346510988092,
+  "factuality": 0.3,
+  "information_density": 0.0058815007519461525,
+  "rescored": true,
+  "judge_parse_failures_total_instance": 0
+}
