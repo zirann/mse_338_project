@@ -1,16 +1,25 @@
-"""Standalone minimal DPO + uncertainty-preservation penalty (Mitigation 2).
+"""Standalone matched DPO trainer for all arms (no `trl.DPOTrainer`).
 
-This module implements DPO from scratch (no `trl.DPOTrainer`) so we have full
-control over an auxiliary uncertainty-preservation term added to the loss:
+This module implements DPO from scratch so we control the loss for every arm.
+A single entry point `run_one_regularized_dpo_round(...)` runs all of:
 
-    L = L_DPO + lambda * penalty
+- vanilla DPO            (length_debias="none", dpop_lambda=0)
+- SamPO length debiasing (length_debias="sampo"): per-pair token-count
+  equalization via down-sampling the longer side to the shorter side's length
+  (faithful to sampo/dpo_trainer.py); "lennorm" is a length-normalized variant.
+- DPOP                   (dpop_lambda>0): Smaug positive-preservation term added
+  inside the DPO logit (arXiv 2402.13228).
+- SamPO + DPOP           (both).
 
-The pure-math functions (`dpo_loss`, `penalty_a_mass_floor`,
-`penalty_b_chosen_hedge_logprob`, `penalty_c_entropy_floor`) operate on plain
-tensors and are unit-tested without loading any model. The training entry point
-`run_one_regularized_dpo_round(...)` mirrors the signature and metadata contract
-of `complexity_theater.dpo.run_one_dpo_round` (including a `mock=True` path) so
-it drops into the existing runner.
+It also retains an OPTIONAL uncertainty-preservation penalty (Formulations
+A/B/C, `reg_config["reg_lambda"]`), OFF by default (reg_lambda=0) and used only
+for appendix ablations.
+
+The pure-math functions (`dpo_loss`, `per_token_logps`, `sampo_select`,
+`aggregate_pair_logps`, `penalty_*`) operate on plain tensors and are
+unit-tested without loading any model. `run_one_regularized_dpo_round` mirrors
+the metadata contract of `complexity_theater.dpo.run_one_dpo_round` (including a
+`mock=True` path) so it drops into the existing runner.
 
 Penalty formulations (see paper Methods):
 
@@ -52,11 +61,22 @@ def dpo_loss(
     ref_chosen_logps,
     ref_rejected_logps,
     beta: float,
+    dpop_lambda: float = 0.0,
 ):
-    """Standard DPO loss + reward statistics on sequence log-probabilities.
+    """DPO loss (+ optional DPOP positive-preservation term) and reward stats.
 
-    All inputs are 1-D tensors of shape [batch]. Returns
-    (loss_scalar, stats_dict).
+    All inputs are 1-D tensors of shape [batch]. With `dpop_lambda > 0` this is
+    the Smaug DPOP loss (arXiv 2402.13228):
+
+        logits = (logpi_c - logref_c) - (logpi_l - logref_l)
+                 - dpop_lambda * max(0, logref_c - logpi_c)
+        L = -E log sigma(beta * logits)
+
+    The penalty `max(0, logref_c - logpi_c)` is zero while the policy keeps the
+    chosen completion's log-prob at/above the reference, and positive (raising
+    the loss) when the policy drives it below reference -- preventing DPO's
+    failure mode of suppressing the preferred completion. Returns
+    (loss_scalar, stats_dict) where stats includes `dpop_penalty`.
     """
     import torch
     import torch.nn.functional as F
@@ -64,6 +84,11 @@ def dpo_loss(
     pi_logratios = policy_chosen_logps - policy_rejected_logps
     ref_logratios = ref_chosen_logps - ref_rejected_logps
     logits = pi_logratios - ref_logratios
+
+    dpop_pen = torch.relu(ref_chosen_logps - policy_chosen_logps)
+    if dpop_lambda > 0.0:
+        logits = logits - dpop_lambda * dpop_pen
+
     loss = -F.logsigmoid(beta * logits).mean()
 
     chosen_rewards = beta * (policy_chosen_logps - ref_chosen_logps).detach()
@@ -73,6 +98,7 @@ def dpo_loss(
         "rewards_rejected": float(rejected_rewards.mean().item()),
         "rewards_margins": float((chosen_rewards - rejected_rewards).mean().item()),
         "rewards_accuracy": float((chosen_rewards > rejected_rewards).float().mean().item()),
+        "dpop_penalty": float(dpop_pen.detach().mean().item()),
     }
     return loss, stats
 
@@ -89,13 +115,101 @@ def _shift(logits, input_ids, completion_mask):
 
 def sequence_logps(logits, input_ids, completion_mask):
     """Sum of per-token log-probabilities over completion positions. [batch]."""
+    tok_logp, shift_mask = per_token_logps(logits, input_ids, completion_mask)
+    return (tok_logp * shift_mask).sum(dim=-1)
+
+
+def per_token_logps(logits, input_ids, completion_mask):
+    """Per-token completion log-probs and the completion mask (both shifted).
+
+    Returns (tok_logp, shift_mask), each shape [batch, seq_len-1]. tok_logp is
+    the log-prob the model assigns to the realized next token; shift_mask is 1
+    at positions whose predicted token belongs to the completion.
+    """
     import torch
     import torch.nn.functional as F
 
     shift_logits, shift_labels, shift_mask = _shift(logits, input_ids, completion_mask)
     logp = F.log_softmax(shift_logits, dim=-1)
     tok_logp = torch.gather(logp, 2, shift_labels.unsqueeze(-1)).squeeze(-1)
-    return (tok_logp * shift_mask).sum(dim=-1)
+    return tok_logp, shift_mask
+
+
+def sampo_select(mask_c, mask_r, generator=None):
+    """SamPO token-count equalization (arXiv 2406.xxxxx; sampo/dpo_trainer.py).
+
+    For each pair, the longer side's valid completion positions are randomly
+    down-sampled (without replacement) to the shorter side's token count, so
+    chosen and rejected contribute the SAME number of tokens to the sequence
+    log-prob (hence to the implicit DPO reward), removing the mechanical
+    length-reward correlation.
+
+    `mask_c`, `mask_r` are float completion masks [batch, T]. Returns
+    (sel_c, sel_r, used_c, used_r): equalized selection masks (same shape) and
+    per-example selected token counts (lists). The same selection is meant to
+    be applied to both policy and reference per-token logps.
+    """
+    import torch
+
+    B = mask_c.shape[0]
+    sel_c = torch.zeros_like(mask_c)
+    sel_r = torch.zeros_like(mask_r)
+    used_c, used_r = [], []
+    for i in range(B):
+        idx_c = mask_c[i].nonzero(as_tuple=True)[0]
+        idx_r = mask_r[i].nonzero(as_tuple=True)[0]
+        nc, nr = idx_c.numel(), idx_r.numel()
+        m = min(nc, nr)
+        if m == 0:
+            used_c.append(0)
+            used_r.append(0)
+            continue
+        if nc > m:
+            perm = torch.randperm(nc, generator=generator, device=mask_c.device)[:m]
+            idx_c = idx_c[perm]
+        if nr > m:
+            perm = torch.randperm(nr, generator=generator, device=mask_r.device)[:m]
+            idx_r = idx_r[perm]
+        sel_c[i, idx_c] = 1.0
+        sel_r[i, idx_r] = 1.0
+        used_c.append(m)
+        used_r.append(m)
+    return sel_c, sel_r, used_c, used_r
+
+
+def aggregate_pair_logps(
+    ptl_c, mask_c, ptl_r, mask_r, rtl_c, rtl_r, length_debias, generator=None
+):
+    """Aggregate per-token logps for a (chosen, rejected) pair under a
+    length-debiasing mode. Returns (pol_c, pol_r, ref_c, ref_r, used_c, used_r),
+    sequence-level logps [batch] plus per-example token counts used.
+
+    - "none":   sum over all completion tokens (standard DPO; length-biased).
+    - "lennorm": sum / completion length (length-normalized).
+    - "sampo":  sum over an equalized down-sampled token subset (SamPO); the
+                SAME subset is applied to policy and reference.
+    """
+    if length_debias == "sampo":
+        sel_c, sel_r, used_c, used_r = sampo_select(mask_c, mask_r, generator=generator)
+        pol_c = (ptl_c * sel_c).sum(dim=-1)
+        pol_r = (ptl_r * sel_r).sum(dim=-1)
+        ref_c = (rtl_c * sel_c).sum(dim=-1)
+        ref_r = (rtl_r * sel_r).sum(dim=-1)
+        return pol_c, pol_r, ref_c, ref_r, used_c, used_r
+    if length_debias == "lennorm":
+        nc = mask_c.sum(dim=-1).clamp(min=1.0)
+        nr = mask_r.sum(dim=-1).clamp(min=1.0)
+        pol_c = (ptl_c * mask_c).sum(dim=-1) / nc
+        pol_r = (ptl_r * mask_r).sum(dim=-1) / nr
+        ref_c = (rtl_c * mask_c).sum(dim=-1) / nc
+        ref_r = (rtl_r * mask_r).sum(dim=-1) / nr
+        return pol_c, pol_r, ref_c, ref_r, nc.tolist(), nr.tolist()
+    # "none"
+    pol_c = (ptl_c * mask_c).sum(dim=-1)
+    pol_r = (ptl_r * mask_r).sum(dim=-1)
+    ref_c = (rtl_c * mask_c).sum(dim=-1)
+    ref_r = (rtl_r * mask_r).sum(dim=-1)
+    return pol_c, pol_r, ref_c, ref_r, mask_c.sum(dim=-1).tolist(), mask_r.sum(dim=-1).tolist()
 
 
 def penalty_a_mass_floor(policy_logits, ref_logits, input_ids, completion_mask, uncertainty_ids):
@@ -219,14 +333,25 @@ def run_one_regularized_dpo_round(
     hparams: dict[str, Any] | None = None,
     lora_config: dict[str, Any] | None = None,
     reg_config: dict[str, Any] | None = None,
+    length_debias: str = "none",
+    dpop_lambda: float = 0.0,
     seed: int = 42,
     mock: bool = False,
 ) -> dict[str, Any]:
-    """Run one DPO round with an uncertainty-preservation penalty; save the LoRA
-    adapter; return metadata mirroring `dpo.run_one_dpo_round`."""
+    """Run one local DPO round; save the LoRA adapter; return metadata.
+
+    This is the single matched DPO trainer for all arms. Arms differ only by:
+    - `length_debias`: "none" (vanilla DPO), "sampo" (SamPO token down-sampling),
+      or "lennorm" (length-normalized logps).
+    - `dpop_lambda`: > 0 adds the Smaug DPOP positive-preservation term.
+    The uncertainty-regularizer penalty (`reg_config["reg_lambda"]`) defaults to
+    0 (OFF) for all SamPO/DPOP arms; it remains available for appendix use.
+    """
     hp = {**DEFAULT_HPARAMS, **(hparams or {})}
     lora = {**DEFAULT_LORA, **(lora_config or {})}
     reg = {**DEFAULT_REG, **(reg_config or {})}
+    if length_debias not in ("none", "sampo", "lennorm"):
+        raise ValueError(f"length_debias must be none|sampo|lennorm; got {length_debias!r}")
     pairs_path = Path(preference_pairs_jsonl)
     adapter_dir = Path(output_adapter_dir)
     adapter_dir.mkdir(parents=True, exist_ok=True)
@@ -235,13 +360,15 @@ def run_one_regularized_dpo_round(
     if mock:
         metadata = {
             "status": "mock",
-            "trainer": "regularized_dpo",
+            "trainer": "local_dpo",
             "base_model_name": base_model_name,
             "reference_adapter_path": str(reference_adapter_path) if reference_adapter_path else None,
             "num_pairs": num_pairs,
             "hparams": hp,
             "lora": lora,
             "reg": reg,
+            "length_debias": length_debias,
+            "dpop_lambda": dpop_lambda,
             "seed": seed,
         }
         with (adapter_dir / "train_metadata.json").open("w", encoding="utf-8") as f:
@@ -251,6 +378,8 @@ def run_one_regularized_dpo_round(
             "train_loss": float("nan"),
             "rewards_margins": 0.0,
             "mean_penalty": 0.0,
+            "length_debias": length_debias,
+            "dpop_lambda": dpop_lambda,
             "num_pairs": num_pairs,
             "reg": reg,
             "mock": True,
@@ -325,6 +454,8 @@ def run_one_regularized_dpo_round(
 
     optimizer = torch.optim.AdamW((p for p in policy.parameters() if p.requires_grad), lr=lr)
     pad_id = tokenizer.pad_token_id
+    sampo_gen = torch.Generator(device=device)
+    sampo_gen.manual_seed(seed)
 
     def _collate(side_rows):
         """Pad a list of (input_ids, completion_mask) to a batch tensor set."""
@@ -342,7 +473,8 @@ def run_one_regularized_dpo_round(
         )
 
     n_steps = max(1, int(round(epochs * ((len(pairs) + batch_size - 1) // batch_size))))
-    losses, penalties, margins = [], [], []
+    losses, penalties, margins, dpop_pens = [], [], [], []
+    used_c_all, used_r_all = [], []
     step = 0
     keep_training = True
     for _epoch in range(max(1, int(round(epochs)))):
@@ -365,29 +497,43 @@ def run_one_regularized_dpo_round(
                 ref_c_logits = reference(input_ids=c_ids, attention_mask=c_attn).logits
                 ref_r_logits = reference(input_ids=r_ids, attention_mask=r_attn).logits
 
-            pol_c_logp = sequence_logps(pol_c_logits, c_ids, c_comp)
-            pol_r_logp = sequence_logps(pol_r_logits, r_ids, r_comp)
-            ref_c_logp = sequence_logps(ref_c_logits, c_ids, c_comp)
-            ref_r_logp = sequence_logps(ref_r_logits, r_ids, r_comp)
-
-            loss_dpo, stats = dpo_loss(pol_c_logp, pol_r_logp, ref_c_logp, ref_r_logp, beta)
-            penalty = compute_penalty(
-                formulation, pol_c_logits, ref_c_logits, c_ids, c_comp, uncertainty_ids
+            # Per-token logps, then aggregate under the length-debiasing mode.
+            ptl_c, mask_c = per_token_logps(pol_c_logits, c_ids, c_comp)
+            ptl_r, mask_r = per_token_logps(pol_r_logits, r_ids, r_comp)
+            rtl_c, _ = per_token_logps(ref_c_logits, c_ids, c_comp)
+            rtl_r, _ = per_token_logps(ref_r_logits, r_ids, r_comp)
+            pol_c_logp, pol_r_logp, ref_c_logp, ref_r_logp, used_c, used_r = aggregate_pair_logps(
+                ptl_c, mask_c, ptl_r, mask_r, rtl_c, rtl_r, length_debias, generator=sampo_gen
             )
-            loss = loss_dpo + reg_lambda * penalty
+
+            loss_dpo, stats = dpo_loss(
+                pol_c_logp, pol_r_logp, ref_c_logp, ref_r_logp, beta, dpop_lambda=dpop_lambda
+            )
+
+            # Uncertainty-regularizer penalty is OFF unless reg_lambda > 0.
+            if reg_lambda > 0.0:
+                penalty = compute_penalty(
+                    formulation, pol_c_logits, ref_c_logits, c_ids, c_comp, uncertainty_ids
+                )
+                loss = loss_dpo + reg_lambda * penalty
+                penalties.append(float(penalty.item()))
+            else:
+                loss = loss_dpo
 
             optimizer.zero_grad()
             loss.backward()
             optimizer.step()
 
             losses.append(float(loss_dpo.item()))
-            penalties.append(float(penalty.item()))
             margins.append(stats["rewards_margins"])
+            dpop_pens.append(stats["dpop_penalty"])
+            used_c_all.extend(used_c)
+            used_r_all.extend(used_r)
             step += 1
             print(
-                f"[reg_dpo] step {step}/{n_steps} formulation={formulation} "
-                f"L_dpo={loss_dpo.item():.4f} penalty={penalty.item():.4f} "
-                f"margin={stats['rewards_margins']:+.4f}"
+                f"[local_dpo] step {step}/{n_steps} mode={length_debias} dpop_lambda={dpop_lambda} "
+                f"L_dpo={loss_dpo.item():.4f} margin={stats['rewards_margins']:+.4f} "
+                f"dpop_pen={stats['dpop_penalty']:.4f}"
             )
             if step >= n_steps:
                 keep_training = False
@@ -401,21 +547,30 @@ def run_one_regularized_dpo_round(
 
     metadata = {
         "status": "ok",
-        "trainer": "regularized_dpo",
+        "trainer": "local_dpo",
         "base_model_name": base_model_name,
         "reference_adapter_path": str(reference_adapter_path) if reference_adapter_path else None,
         "num_pairs": len(pairs),
         "hparams": hp,
         "lora": lora,
         "reg": reg,
+        "length_debias": length_debias,
+        "dpop_lambda": dpop_lambda,
         "seed": seed,
         "train_loss": _mean(losses),
+        "loss_first": losses[0] if losses else None,
+        "loss_last": losses[-1] if losses else None,
         "dpo_loss_component": _mean(losses),
-        "penalty_component": _mean(penalties),
-        "mean_penalty": _mean(penalties),
+        "penalty_component": _mean(penalties) if penalties else 0.0,
+        "mean_penalty": _mean(penalties) if penalties else 0.0,
+        "mean_dpop_penalty": _mean(dpop_pens),
         "reg_formulation": formulation,
         "reg_lambda": reg_lambda,
         "rewards_margins": _mean(margins),
+        "rewards_margins_final": margins[-1] if margins else None,
+        "rewards_margins_max": max(margins) if margins else None,
+        "mean_tokens_used_chosen": _mean(used_c_all),
+        "mean_tokens_used_rejected": _mean(used_r_all),
         "num_steps": step,
     }
     with (adapter_dir / "train_metadata.json").open("w", encoding="utf-8") as f:
@@ -425,8 +580,10 @@ def run_one_regularized_dpo_round(
         "adapter_path": str(adapter_dir),
         "train_loss": metadata["train_loss"],
         "rewards_margins": metadata["rewards_margins"],
-        "mean_penalty": metadata["mean_penalty"],
+        "rewards_margins_final": metadata["rewards_margins_final"],
+        "mean_dpop_penalty": metadata["mean_dpop_penalty"],
+        "length_debias": length_debias,
+        "dpop_lambda": dpop_lambda,
         "num_pairs": len(pairs),
-        "reg": reg,
         "mock": False,
     }

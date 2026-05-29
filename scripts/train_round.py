@@ -369,6 +369,24 @@ def parse_args() -> argparse.Namespace:
         help="Regularizer weight lambda in L = L_DPO + lambda * penalty.",
     )
     p.add_argument(
+        "--length_debias",
+        choices=["none", "sampo", "lennorm"],
+        default=None,
+        help="SamPO length debiasing: none (vanilla), sampo (token down-sampling), lennorm (length-normalized).",
+    )
+    p.add_argument(
+        "--dpop_lambda",
+        type=float,
+        default=None,
+        help="DPOP positive-preservation weight (Smaug). 0 = off.",
+    )
+    p.add_argument(
+        "--trainer",
+        choices=["local", "trl"],
+        default=None,
+        help="DPO trainer substrate: local standalone loop (all arms) or trl (vanilla parity check only).",
+    )
+    p.add_argument(
         "--out_dir",
         default=None,
         help="Override the default per-round output directory (e.g. outputs/random/seed0).",
@@ -400,10 +418,19 @@ def main() -> None:
     reg_formulation = args.reg_formulation or mit_params.get("reg_formulation", "A")
     reg_lambda = args.reg_lambda if args.reg_lambda is not None else float(mit_params.get("reg_lambda", 0.2))
 
+    # SamPO length debiasing + DPOP (paper-anchored arms). CLI overrides arm block.
+    length_debias = args.length_debias or arm.get("length_debias", "none")
+    dpop_lambda = args.dpop_lambda if args.dpop_lambda is not None else float(arm.get("dpop_lambda", 0.0))
+    # Trainer substrate: "local" (standalone loop, all arms) or "trl" (vanilla parity only).
+    trainer = args.trainer
+    if trainer is None:
+        trainer = "trl" if arm.get("trainer") == "trl" else "local"
+
     print(
         f"[train_round={round_n}] arm={arm.get('name', 'default')} seed={seed} "
-        f"pair={'random' if use_random else 'judge'} length_match={length_match} "
-        f"uncertainty_eps={uncertainty_eps} regularized={use_regularized}"
+        f"pair={'random' if use_random else 'judge'} trainer={trainer} "
+        f"length_debias={length_debias} dpop_lambda={dpop_lambda} "
+        f"length_match={length_match} uncertainty_eps={uncertainty_eps} regularized={use_regularized}"
     )
 
     data_dir = ROOT / cfg["outputs"]["data_dir"]
@@ -568,8 +595,26 @@ def main() -> None:
         if prev_adapter.exists():
             reference_adapter_path = prev_adapter
 
-    if use_regularized:
-        # Mitigation 2: route through the standalone uncertainty-regularized loop.
+    if trainer == "trl":
+        # Vanilla parity path only (TRL DPOTrainer); ignores SamPO/DPOP knobs.
+        if length_debias != "none" or dpop_lambda > 0.0 or use_regularized:
+            print(
+                f"[train_round={round_n}] WARN: --trainer trl ignores "
+                f"length_debias/dpop_lambda/regularizer; use --trainer local for those arms."
+            )
+        result = run_one_dpo_round(
+            base_model_name=cfg["base_model"]["hf_id"],
+            reference_adapter_path=reference_adapter_path,
+            preference_pairs_jsonl=pairs_path,
+            output_adapter_dir=adapter_dir,
+            hparams=cfg["dpo"],
+            lora_config=cfg["lora"],
+            seed=seed,
+            mock=args.mock,
+        )
+    else:
+        # Standalone matched loop for all arms (vanilla / SamPO / DPOP / SamPO+DPOP,
+        # plus the optional uncertainty regularizer when reg_lambda > 0).
         from complexity_theater.regularized_dpo import run_one_regularized_dpo_round
 
         result = run_one_regularized_dpo_round(
@@ -579,18 +624,12 @@ def main() -> None:
             output_adapter_dir=adapter_dir,
             hparams=cfg["dpo"],
             lora_config=cfg["lora"],
-            reg_config={"reg_formulation": reg_formulation, "reg_lambda": reg_lambda},
-            seed=seed,
-            mock=args.mock,
-        )
-    else:
-        result = run_one_dpo_round(
-            base_model_name=cfg["base_model"]["hf_id"],
-            reference_adapter_path=reference_adapter_path,
-            preference_pairs_jsonl=pairs_path,
-            output_adapter_dir=adapter_dir,
-            hparams=cfg["dpo"],
-            lora_config=cfg["lora"],
+            reg_config={
+                "reg_formulation": reg_formulation,
+                "reg_lambda": reg_lambda if use_regularized else 0.0,
+            },
+            length_debias=length_debias,
+            dpop_lambda=dpop_lambda,
             seed=seed,
             mock=args.mock,
         )

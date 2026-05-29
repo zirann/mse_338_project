@@ -1,242 +1,122 @@
-# Optimization-Induced Uncertainty Suppression Under Preference Optimization, and Two Uncertainty-Preserving Mitigations
+# Length-Controlled DPO and DPOP for Mitigating Uncertainty Suppression
 
-MS&E 338 final project draft. PART I (discovery) + PART II (mitigation). Sections
-that depend on the from-scratch multi-seed reruns are marked `[PENDING: ...]`;
-numbers quoted from the earlier single-seed pilot (now archived under
-`outputs/_archive_trajectory_v1/`) are labeled as pilot evidence. The outline is
-in `paper/outline.md`.
+MS&E 338 final project draft. Sections that depend on the A100 runs are marked
+`[PENDING: ...]`. The pipeline is staged (see `notebooks/colab_a100_runbook.md`)
+and gated on a vanilla-DPO stability smoke.
 
 ## Abstract
 
-Preference optimization (DPO/RLHF) is the default method for aligning small
-language models, and post-optimization style shifts are usually interpreted as
-the policy learning the evaluator's preferences. We study one such shift -
-suppression of explicit epistemic uncertainty markers (hedges) - and ask how
-much of it is attributable to the evaluator versus to the optimization itself.
-Using a Qwen3-0.6B policy, a Qwen2.5-7B-Instruct judge, and TruthfulQA prompts,
-we compare matched single-round DPO arms: judge-selected preferences, uniformly
-random preferences, and length-matched random preferences. In a single-seed
-pilot, judge DPO reduced hedge-marker density from 0.202 to 0.062 per 100 tokens
-across three rounds, and a single round of random-preference DPO reduced it to
-0.059 - reproducing nearly the entire effect without any evaluator signal. We
-rerun all arms from scratch at three seeds with matched compute, add a
-length-matched control to rule out the known DPO length-bias confound, and
-condition the analysis on response correctness. We then propose and evaluate two
-uncertainty-preserving mitigations: a data-level pair filter that drops
-preference pairs which would teach the policy to prefer less-uncertain
-responses, and a differentiable uncertainty-token regularizer added to the DPO
-loss. We frame all cross-arm comparisons as matched-intervention evidence at
-n=20 per arm per seed, and we do not claim causal point estimates.
+Direct Preference Optimization (DPO) is known to exploit response length as a
+reward proxy. We (i) reproduce a length-bias correction in a small LoRA-DPO
+setup using SamPO's token down-sampling (Lu et al. 2024), (ii) extend it with
+the Smaug DPOP positive-preservation term (Pal et al. 2024), and (iii) evaluate
+whether length control and DPOP affect uncertainty signaling (hedge-marker
+density) and overconfidence-like behavior. Five arms - no-DPO baseline, vanilla
+DPO, SamPO DPO, DPOP, and SamPO+DPOP - run through a single standalone matched
+DPO loop differing only by `{length_debias, dpop_lambda}`. We first establish a
+stable vanilla baseline (prior runs under-trained), then report length, judge
+win-rate vs baseline, hedge density, an uncertainty-marker score, and a
+factuality proxy. [PENDING: results.]
 
 ## 1. Introduction
 
-Post-DPO style shifts are commonly read as the policy learning the evaluator's
-preferences. The safety-relevant version of this question is calibration: if
-preference optimization suppresses uncertainty markers independent of
-correctness, then a DPO-aligned policy may communicate more confidently without
-communicating more correctly - a risk in medicine, law, science advising, and
-autonomous agents.
+Preference-optimized policies tend to grow more verbose and more confident; the
+verbosity component is the well-documented DPO length bias. We ask a narrow,
+safety-adjacent question: when we correct the length bias (SamPO) and add a
+positive-preservation term that stops DPO from suppressing the preferred
+completion (DPOP), what happens to how much the policy hedges versus how
+confidently it states answers? Contributions: a faithful minimal SamPO
+reproduction, a minimal DPOP extension, and a clean five-arm matched comparison
+with a stability-gated baseline, under limited compute.
 
-The arc of this project: we measured a clean hedge-suppression effect under
-iterated judge DPO; a random-preference control then reproduced almost all of
-it; so the phenomenon is broader than evaluator preference. PART I quantifies
-the effect under matched controls (judge vs random, length-matched vs not) and
-conditions on correctness. PART II proposes two uncertainty-preserving
-mitigations and tests whether they restore uncertainty signaling without
-destroying the DPO preference signal.
+## 2. Related work
 
-Contributions: (i) random-preference and length-matched matched-intervention
-controls that isolate an optimization-intrinsic component of uncertainty
-suppression; (ii) a correctness-conditioned uncertainty analysis; (iii) two
-mitigations - a data-level uncertainty-preserving pair filter and a
-differentiable uncertainty-token regularizer with three ranked formulations;
-(iv) full inspectability (every preference pair, judge verdict, and generation
-is saved as JSONL).
-
-Attribution discipline: we do not claim a causal decomposition. Judge-vs-random
-and matched-vs-unmatched arms are matched interventions sharing base model,
-hyperparameters, prompts, K, and eval set; only pair construction differs.
-Differences are reported as evidence weight at our scale.
-
-## 2. Related Work
-
-DPO (Rafailov et al. 2023) reparameterizes RLHF into a single classification
-loss. Length/verbosity bias in DPO is documented by Park et al. (2024, R-DPO),
-Lu et al. (2024, SamPO), and Singhal et al. (2023); we adopt Park's dataset-level
-length matching rather than an objective-side regularizer to keep the DPO loss
-intact for the controls, and cite SamPO as the algorithmic alternative.
-Overconfidence/calibration under preference optimization is studied by Leng et
-al. (2025); we observe a related effect that reproduces under random
-preferences. LLM-judge biases (Hu et al. 2025; Zheng et al. 2023; BITE 2026)
-motivate the judge controls; after the random-preference control, judge-specific
-bias is a smaller part of our story than initially assumed.
+DPO (Rafailov et al. 2023) optimizes the log-prob margin between chosen and
+rejected completions. Length bias in DPO is documented by Singhal et al. (2023),
+Park et al. (2024, R-DPO; length-vs-quality entanglement), and Lu et al. (2024,
+SamPO; down-sampled KL) - our selected paper. Smaug (Pal et al. 2024) identifies
+a DPO failure mode where the chosen completion's probability falls, and fixes it
+with the DPOP term. Leng et al. (2025) study overconfidence/calibration under
+preference optimization, motivating our uncertainty metrics.
 
 ## 3. Methodology
 
-### 3.1-3.5 Setup
+### 3.1 Models and data
+Policy Qwen3-0.6B (LoRA); judge and reference-grounded factuality scorer
+Qwen2.5-7B-Instruct (greedy; same-family scorer disclosed). TruthfulQA
+generation/validation, category whitelist; 80 train / 80 eval prompts.
 
-Policy Qwen3-0.6B (thinking mode), judge/factuality scorer Qwen2.5-7B-Instruct
-(greedy; same-family confound disclosed). TruthfulQA generation/validation,
-category whitelist {Misconceptions, Science, History, Health, Law, Statistics},
-20 train + 20 eval prompts (`--limit 40`). DPO+LoRA (r=16, alpha=32, dropout
-0.05; beta=0.1, lr=5e-5, 1 epoch, batch 4, grad-accum 2), frozen across arms.
-K=4 candidates/prompt at temperature 0.9. Judge pairs = (best, worst);
-random pairs = two uniform-random distinct candidates (seeded). Length-matched
-arms retain only pairs with chosen/rejected token-length ratio in [0.8, 1.2].
+### 3.2 One matched DPO loop
+All arms use the standalone loop in `src/complexity_theater/regularized_dpo.py`
+(no TRL subclassing). Stable knobs, validated by the Stage-2 smoke: lr 1e-4,
+3 epochs, beta 0.1, batch 4, grad-accum 1 (~60 updates on ~80 judge pairs). The
+prior 5e-5 / 1-epoch / grad-accum-2 setting under-trained (loss ~ ln2,
+rewards_margins ~ 0) and is archived.
 
-### 3.6 Uncertainty metric
+### 3.3 SamPO length debiasing
+DPO's implicit reward uses the sequence log-prob, a sum of per-token log-probs
+over the completion. Because each token contributes a negative log-prob, a
+chosen/rejected length mismatch makes the reward length-correlated. SamPO
+removes this: for each pair, the longer side's valid completion positions are
+down-sampled without replacement to the shorter side's token count, and the
+sequence log-prob is summed over the equal-count subsets (the SAME sampled
+positions are applied to policy and reference). With equal token counts, the
+implicit reward is no longer mechanically length-correlated. We also provide a
+`lennorm` variant (divide the sequence log-prob by completion length). This is
+faithful to `sampo/dpo_trainer.py` (the `len_norm` branch).
 
-`uncertainty_score(y)` is the density (per 100 tokens) of phrases in the
-uncertainty lexicon: the hedge + caveat + nuance subclasses plus an explicit
-first-person-uncertainty group ("i don't know", "i'm not sure", "may", "might",
-"possibly", "perhaps", "unclear", ...). `hedge_density` (hedge+caveat+nuance) is
-retained for continuity with the pilot. Secondary metrics
-(reasoning_narration_density, structural_complexity, epistemic_marker_density,
-information_density) are appendix-only.
+### 3.4 DPOP extension
+DPOP (Smaug) adds a one-sided positive-preservation term inside the DPO logit:
 
-### 3.7 Mitigation 1 (data-level pair filter)
+L_DPOP = - E log sigma( beta * [ (logπθ(yw) - logπref(yw)) - (logπθ(yl) - logπref(yl))
+                                 - lambda * max(0, logπref(yw) - logπθ(yw)) ] )
 
-Given preference pairs (x, y_w, y_l), retain only those with
+The penalty is zero while the policy keeps the chosen completion's log-prob at
+or above the reference, and positive otherwise, preventing chosen-log-prob
+collapse. lambda is scale-sensitive (our log-probs are sequence sums); we use
+the largest of {0.5, 1.0} that keeps rewards_margins positive and train_loss
+below ln2.
 
-    uncertainty_score(y_w) >= uncertainty_score(y_l) - epsilon,
+### 3.5 Arms and metrics
+baseline / vanilla_dpo / sampo_dpo / dpop / sampo_dpop, judge preferences, seed
+0 first (1-2 if promising). Metrics: response length, judge_win_rate vs
+baseline, hedge_density, uncertainty_score, factuality proxy, plus train_loss /
+rewards_margins / mean_dpop_penalty / mean_tokens_used diagnostics. Length is
+reported alongside hedge_density so uncertainty changes can be checked against
+length.
 
-dropping pairs that would push the policy to prefer a less-uncertain response.
-epsilon >= 0 is a tolerance band (epsilon = 0 is the strict floor). We log
-retention counts and the chosen/rejected uncertainty means.
+## 4. Experiments and results
 
-### 3.8 Mitigation 2 (uncertainty-token regularizer)
+### 4.1 Baseline-stability gate
+[PENDING: vanilla smoke; report loss_last, rewards_margins_final, win-rate,
+coherence; confirm acceptance criteria before proceeding.]
 
-DPO loss on a pair, with policy pi_theta and frozen reference pi_ref:
+### 4.2 Reproduce - vanilla vs SamPO
+[PENDING: Fig 1 (length) + Fig 2 (reproduce hedge). Expect SamPO to reduce the
+length effect while maintaining judge win-rate; report the hedge_density change.]
 
-    L_DPO = - log sigma( beta * [ (log pi_theta(y_w|x) - log pi_ref(y_w|x))
-                                 - (log pi_theta(y_l|x) - log pi_ref(y_l|x)) ] ).
+### 4.3 Extend - DPOP and SamPO+DPOP
+[PENDING: Fig 3 (extend hedge). Does the positive-preservation term retain
+uncertainty signaling relative to vanilla/SamPO?]
 
-We add an auxiliary uncertainty-preservation penalty: L = L_DPO + lambda * P.
-Let U be the set of uncertainty-token ids (built from the lexicon; a
-bag-of-subword-ids approximation, see below). For completion position t with
-next-token distributions p_theta(.|y_<t,x) and p_ref(.|y_<t,x):
+### 4.4 Quality maintained
+[PENDING: Fig 4 (judge win-rate vs baseline across arms).]
 
-- Formulation A (default) - reference-anchored one-sided uncertainty-mass floor:
-    m_theta(t) = sum_{v in U} p_theta(v | y_<t, x);  m_ref(t) likewise;
-    P_A = mean_t ReLU( m_ref(t) - m_theta(t) ).
-  One-sided: penalizes the policy only for emitting LESS uncertainty-token mass
-  than the reference; never forces extra hedging. Anchored to the base
-  distribution we wish to preserve.
-- Formulation B - chosen hedge-token log-prob preservation:
-    P_B = - mean_{t in H} log pi_theta(y_t | y_<t, x),  H = chosen positions whose token is in U.
-  Preserves the probability of hedge tokens already present in the chosen
-  response; reuses gathered log-probs (cheapest).
-- Formulation C (ablation) - predictive-entropy floor:
-    P_C = mean_t ReLU( H_ref(t) - H_theta(t) ),  H = Shannon entropy of the next-token distribution.
-  Generic entropy preservation; not specific to verbalized uncertainty. Included
-  to show a targeted penalty preserves hedging better than generic entropy.
+### 4.5 Uncertainty vs length
+[PENDING: read hedge_density next to length to rule out length-driven artifacts.]
 
-Ranking by (theoretical clarity, implementation simplicity, empirical
-plausibility): A ~ B >> C. We implement A as default, B and C selectable.
+## 5. Discussion
 
-Token-set approximation: each lexicon phrase is tokenized (with and without a
-leading space) and all resulting subword ids are unioned. P thus acts on the
-constituent subwords (e.g. the "however", "might", "possibly" tokens) rather
-than on exact phrase spans. We document this as an approximation.
+[PENDING after results.] Themes: (1) what length control alone does to
+uncertainty signaling; (2) whether DPOP incidentally preserves hedging by
+preventing chosen-log-prob collapse; (3) limitations - single
+model/judge/dataset, small n, seed count, lexicon-based uncertainty proxy,
+DPOP lambda scale-sensitivity, same-family factuality scorer; (4) deferred
+medical overconfidence red-team case study.
 
-We implement Mitigation 2 in a standalone minimal DPO loop (policy LoRA + frozen
-reference, prompt-masked sequence log-probs) rather than subclassing the TRL
-trainer, so the auxiliary term is transparent and version-robust. The
-unregularized arms continue to use the existing TRL path.
+## 6. References
 
-### 3.9 Protocol
-
-Three seeds {0,1,2} per core arm; metrics reported as mean +/- SE across seeds.
-Manual factuality (CORRECT/PARTIAL/INCORRECT vs TruthfulQA references) is
-annotated on seed 0 of the five core arms and joined for the
-correctness-conditioned analysis; lexical metrics are aggregated across all
-seeds. A 10-response self-consistency re-pass reports annotation reliability.
-
-## 4. PART I - Discovery
-
-[PENDING: from-scratch multi-seed reruns of baseline, judge_dpo, random,
-random_length_matched. Populate Table 1 and Figure 1 from
-`outputs/arms_summary.json`.]
-
-Pilot evidence (single seed, archived): judge DPO hedge_density 0.202 -> 0.151
--> 0.118 -> 0.062 across rounds 0-3; one round of random-preference DPO
-0.202 -> 0.059; judge win-rate vs baseline 0.70 (judge R1) vs 0.60 (random R1).
-The pilot motivated this study; the headline numbers below are the multi-seed
-single-round reruns.
-
-- 4.1 Judge DPO (A) - reference effect. [PENDING]
-- 4.2 Random-preference DPO (B) - optimization-intrinsic drift. [PENDING]
-- 4.3 Length-matched random (C) - length-bias control. [PENDING]
-- 4.4 Length-matched judge (optional appendix). [PENDING]
-- 4.5 Correctness-conditioned uncertainty (does the INCORRECT subset also lose
-  hedging?). [PENDING; Figure 3]
-- 4.6 Qualitative inspection across arms (Law_24 legal tender, Misconceptions_38
-  dog color vision shown in the pilot; refresh on the rerun).
-
-Figure 1 (`figures/fig1_discovery.png`): hedge_density across
-{baseline, judge_dpo, random, random_length_matched}, mean +/- SE over seeds.
-
-## 5. PART II - Mitigation
-
-[PENDING: mit_pairfilter and mit_uncertreg multi-seed reruns. Populate Table 2,
-the Mitigation-1 retention table, the Mitigation-2 loss-decomposition table, and
-Figure 2 / Figure 3.]
-
-- 5.1 Mitigation 1 (pair filter): retention statistics (from
-  `preference_diagnostics.json -> uncertainty_filter`) and recovery of
-  hedge_density toward baseline.
-- 5.2 Mitigation 2 (regularizer): Formulation A primary; B and C comparison;
-  lambda effect; dpo_loss_component vs penalty_component from
-  `adapter/train_metadata.json`.
-- 5.3 Preference-signal preservation: do mitigations retain DPO win-rate and
-  positive rewards_margins while restoring uncertainty?
-- 5.4 Correctness-conditioned recovery: mitigations should restore hedging on
-  uncertain/incorrect answers, not merely re-add hedging everywhere.
-
-Figure 2 (`figures/fig2_mitigation.png`): hedge_density for
-{baseline, random, mit_pairfilter, mit_uncertreg}.
-Figure 3 (`figures/fig3_correctness_conditioned.png`): INCORRECT-subset
-hedge_density across arms.
-
-## 6. Discussion, Limitations, References
-
-### Discussion
-
-Candidate mechanisms for an optimization-intrinsic component: the base policy's
-hedge rate is already low (~0.2 markers/100 tok), so a weak low-rank LoRA update
-on ~20 pairs may attenuate rare lexical patterns regardless of preference label;
-beta=0.1 is a loose KL constraint that permits broad style drift on weak
-signal. Methodological recommendation: any LLM-judge style-shift claim should
-include a random-preference DPO control (and, where length differs, a
-length-matched control); without them, an observed shift cannot be attributed to
-the judge.
-
-### Limitations
-
-n=20 eval prompts per seed; 3 seeds; single dataset (TruthfulQA); single judge
-family (also the factuality scorer); lexicon-based uncertainty proxy
-(POS-unaware); bag-of-subwords token-set approximation in the regularizer;
-single-annotator manual factuality; KL not monitored on the TRL path
-(`final_kl` is null). We claim direction-of-effect at this scale, not effect-size
-significance.
-
-### Not claimed
-
-No new RLHF algorithm; no evaluator-essence discovery; no causal point estimates;
-no generalization beyond the studied (model, judge, dataset, hyperparameter)
-tuple.
-
-### Appendix
-
-Iterative 0-3 trajectory (now supporting/exploratory); reasoning_narration_density
-(a falsified pre-registration: predicted to rise, observed non-monotone);
-structural_complexity (~0 in thinking-mode outputs); epistemic_marker_density
-(wide union, superseded); information_density.
-
-### References
-
-Rafailov et al. 2023 (DPO); Park et al. 2024 (R-DPO, length-vs-quality); Lu et
-al. 2024 (SamPO); Singhal et al. 2023 (RLHF length); Leng et al. 2025 (reward
-calibration); Hu et al. 2025 (length bias in LLM judges); Zheng et al. 2023
-(MT-Bench); BITE 2026 (style-manipulation attacks); Lin et al. 2022 (TruthfulQA);
-Qwen Team 2024-2025 (Qwen3 / Qwen2.5 model cards).
+Rafailov et al. 2023 (DPO); Park et al. 2024 (R-DPO / length-vs-quality); Lu et
+al. 2024 (SamPO); Pal et al. 2024 (Smaug / DPOP); Singhal et al. 2023 (RLHF
+length); Leng et al. 2025 (calibration under RLHF); Lin et al. 2022
+(TruthfulQA); Qwen Team (Qwen3 / Qwen2.5 model cards).

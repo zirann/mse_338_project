@@ -1,0 +1,2 @@
+# Canonical figure output directory. Populated by analysis/make_figures.py:
+# fig1_length, fig2_reproduce_hedge, fig3_extend_hedge, fig4_winrate.

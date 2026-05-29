@@ -1,0 +1,14 @@
+# Arm D: DPOP (Smaug positive preservation). Adds the term
+#   - dpop_lambda * max(0, log pi_ref(yw) - log pi_theta(yw))
+# inside the DPO logit, preventing collapse of the chosen completion's log-prob.
+# dpop_lambda is scale-sensitive (our logps are sequence sums); confirm in the
+# smoke (start 0.5, raise to 1.0 only if rewards_margins stays positive and
+# train_loss stays below ln2).
+base_config: configs/experiment.yaml
+
+arm:
+  name: dpop
+  pair_construction: judge
+  length_debias: none
+  dpop_lambda: 0.5
+  out_dir_template: outputs/dpop/seed{seed}

@@ -140,6 +140,6 @@ def test_run_one_regularized_dpo_round_mock(tmp_path: Path) -> None:
     assert result["mock"] is True
     meta = json.loads((adapter_dir / "train_metadata.json").read_text())
     assert meta["status"] == "mock"
-    assert meta["trainer"] == "regularized_dpo"
+    assert meta["trainer"] == "local_dpo"
     assert meta["reg"]["reg_formulation"] == "A"
     assert meta["num_pairs"] == 5

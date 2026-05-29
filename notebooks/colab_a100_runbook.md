@@ -1,139 +1,138 @@
-# Colab Enterprise / A100 runbook (uncertainty-suppression + mitigation)
+# Colab Enterprise / A100 runbook: Length-Controlled DPO + DPOP
 
-Rerun-from-scratch pipeline for the uncertainty-suppression project. Single
-NVIDIA A100 (40 or 80 GB). Total budget ~3 to 3.5 hours for the core arms at
-3 seeds, plus baseline and optional arms.
+Minimal-compute, staged pipeline. Single NVIDIA A100. All five DPO arms run
+through one standalone matched loop (`src/complexity_theater/regularized_dpo.py`)
+and differ ONLY by `{length_debias, dpop_lambda}`:
 
-All experiments are single-round DPO from the base policy (reference = base),
-evaluated against a shared baseline arm. Arms differ only by preference-pair
-construction and mitigation, so every cross-arm difference is a matched
-intervention.
+- vanilla_dpo:  length_debias=none,  dpop_lambda=0   (reproduction baseline)
+- sampo_dpo:    length_debias=sampo, dpop_lambda=0   (SamPO length control)
+- dpop:         length_debias=none,  dpop_lambda>0   (DPOP)
+- sampo_dpop:   length_debias=sampo, dpop_lambda>0   (length-controlled DPOP)
 
-The old multi-round trajectory runbook (`colab_enterprise_a100_runbook.md`) is
-deprecated; the trajectory is now an appendix experiment.
+Seed 0 first for every arm; expand to seeds 1-2 only if seed 0 is promising.
 
-## 1. Clone + install
+## Setup
 
 ```bash
 cd /content
-git clone <YOUR_REPO_URL> uncertainty_dpo
-cd uncertainty_dpo
-pip install --upgrade pip
-pip install -r requirements.txt
+git clone <YOUR_REPO_URL> dpo_project && cd dpo_project
+pip install --upgrade pip && pip install -r requirements.txt
+python -c "import torch; print(torch.cuda.is_available(), torch.cuda.get_device_name(0) if torch.cuda.is_available() else 'no cuda')"
 ```
 
-## 2. Verify CUDA
+## Stage 0 - archive failed prior runs (already done in-repo; re-run only if needed)
 
 ```bash
-python -c "import torch; print(torch.cuda.is_available()); print(torch.cuda.get_device_name(0) if torch.cuda.is_available() else 'no cuda')"
+mkdir -p archive_failed_runs archive_configs
+# (outputs_old/, results_bundle_1/ -> archive_failed_runs/; controls,mitigations,experiments/judge_dpo.yaml -> archive_configs/)
 ```
 
-## 3. Prepare data (once)
+## Stage 1 - prepare data + baseline eval
 
 ```bash
-python scripts/prepare.py --config configs/experiment.yaml --limit 40
+python scripts/prepare.py  --config configs/experiment.yaml --limit 160          # 80 train / 80 eval
+python scripts/evaluate.py --config configs/experiment.yaml --round 0 --limit 80 --out_dir outputs/baseline
 ```
 
-Expected: `outputs/data/train_prompts.jsonl` (20 rows) + `outputs/data/eval_prompts.jsonl` (20 rows). ~1 min.
+Expected: `outputs/data/{train_prompts(80),eval_prompts(80)}.jsonl`, `outputs/baseline/{eval_responses.jsonl,metrics.json}`. ~9 min.
 
-## 4. Baseline (once, no DPO)
+## Stage 2 - vanilla DPO baseline-stability smoke (seed 0) -- GATE
+
+The whole study is gated on this. The earlier 5e-5 / 1-epoch / grad-accum-2
+setting under-trained; the stable defaults are now in `configs/experiment.yaml`
+(lr 1e-4, 3 epochs, grad-accum 1, beta 0.1, batch 4 -> ~60 updates on ~80 pairs).
 
 ```bash
-python scripts/evaluate.py --config configs/experiment.yaml --round 0 \
-    --limit 40 --out_dir outputs/baseline
+python scripts/train_round.py --config experiments/vanilla_dpo.yaml --round 1 --limit 80 --seed 0
+python scripts/evaluate.py    --config experiments/vanilla_dpo.yaml --round 1 --limit 80 --seed 0 \
+    --out_dir outputs/vanilla_dpo/seed0 --baseline_dir outputs/baseline
 ```
 
-Expected: `outputs/baseline/{eval_responses.jsonl, metrics.json}`. ~5 min. This is the win-rate reference for every other arm.
+Inspect `outputs/vanilla_dpo/seed0/adapter/train_metadata.json`:
+- `train_curve` (per-step list): loss should TREND DOWN, `rewards_margins` UP.
+- `loss_last` and `loss_first`: `loss_last` clearly below `ln2 = 0.693`.
+- `rewards_margins_final`, `rewards_margins_max`.
 
-## 5. Core arms x seeds
+And `outputs/vanilla_dpo/seed0/metrics.json` vs `outputs/baseline/metrics.json`:
+- `length`, `hedge_density`, `uncertainty_score`, `factuality`, `judge_win_rate_vs_round_0`.
 
-Each command trains one round + evaluates. `--baseline_dir outputs/baseline` makes the win-rate compare against the baseline arm. Run seeds 0,1,2. Approx 12 min per train+eval pair (15 for the regularized arm).
+ACCEPTANCE (ALL must hold to proceed):
+- `loss_last` < 0.66 and `train_curve` visibly descending.
+- `rewards_margins_final` > 0.03 (ideally > 0.05).
+- `judge_win_rate_vs_round_0` > 0.55.
+- Outputs coherent; no length explosion; eval not obviously overfit.
 
-PART I-A judge DPO:
+OVERFIT / COLLAPSE warning signs (treat as fail):
+- train loss drops but eval win-rate flat -> overfit to the pairs.
+- response length explodes; repetition / incoherent text.
+- factuality craters.
+- any hedge/uncertainty change explained purely by length (always read `length` next to `hedge_density`).
+
+IF FAIL: adjust ONE knob at a time and re-run Stage 2, do NOT proceed:
+1. `--length_debias none` kept; raise epochs 3 -> 5 (edit configs/experiment.yaml dpo.num_train_epochs).
+2. then lr 1e-4 -> 1.5e-4.
+3. then `--limit 200` (re-run Stage 1 prepare with `--limit 400`).
+Optional parity sanity check (one-off): rerun vanilla with `--trainer trl` into a
+scratch `--out_dir` and compare loss/margins to the local loop.
+
+## Stage 3 - run SamPO / DPOP / SamPO+DPOP (seed 0) -- only if Stage 2 PASSES
 
 ```bash
-for S in 0 1 2; do
-  python scripts/train_round.py --config experiments/judge_dpo.yaml --round 1 --limit 40 --seed $S
-  python scripts/evaluate.py    --config experiments/judge_dpo.yaml --round 1 --limit 40 --seed $S \
-      --out_dir outputs/judge_dpo/seed$S --baseline_dir outputs/baseline
+for ARM in sampo_dpo dpop sampo_dpop; do
+  python scripts/train_round.py --config experiments/$ARM.yaml --round 1 --limit 80 --seed 0
+  python scripts/evaluate.py    --config experiments/$ARM.yaml --round 1 --limit 80 --seed 0 \
+      --out_dir outputs/$ARM/seed0 --baseline_dir outputs/baseline
 done
 ```
 
-PART I-B random:
+DPOP lambda check (arms dpop, sampo_dpop): in each `adapter/train_metadata.json`
+confirm `mean_dpop_penalty` > 0 (the term is active) AND `rewards_margins_final`
+stays positive with `loss_last` < ln2 (DPOP not overpowering DPO). If margins go
+negative or loss stalls at ln2, halve `dpop_lambda` (0.5 -> 0.25) in
+`experiments/dpop.yaml` and `experiments/sampo_dpop.yaml` and rerun those two arms.
+SamPO check (arms sampo_*): `mean_tokens_used_chosen` ~= `mean_tokens_used_rejected`
+(token counts equalized).
+
+## Stage 4 - aggregate + figures (CPU; seconds)
 
 ```bash
-for S in 0 1 2; do
-  python scripts/train_round.py --config controls/random.yaml --round 1 --limit 40 --seed $S
-  python scripts/evaluate.py    --config controls/random.yaml --round 1 --limit 40 --seed $S \
-      --out_dir outputs/random/seed$S --baseline_dir outputs/baseline
-done
+python analysis/aggregate_arms.py --config configs/experiment.yaml --seeds 0
+python analysis/make_figures.py
 ```
 
-PART I-C length-matched random:
+Outputs: `outputs/arms_summary.json`; `figures/{fig1_length, fig2_reproduce_hedge, fig3_extend_hedge, fig4_winrate}.png`.
 
-```bash
-for S in 0 1 2; do
-  python scripts/train_round.py --config controls/random_length_matched.yaml --round 1 --limit 40 --seed $S
-  python scripts/evaluate.py    --config controls/random_length_matched.yaml --round 1 --limit 40 --seed $S \
-      --out_dir outputs/random_length_matched/seed$S --baseline_dir outputs/baseline
-done
-```
+## Seeds 1-2 (only if seed 0 is promising)
 
-PART II-1 pair-filter mitigation (on random base):
-
-```bash
-for S in 0 1 2; do
-  python scripts/train_round.py --config mitigations/pair_filter.yaml --round 1 --limit 40 --seed $S
-  python scripts/evaluate.py    --config mitigations/pair_filter.yaml --round 1 --limit 40 --seed $S \
-      --out_dir outputs/mit_pairfilter/seed$S --baseline_dir outputs/baseline
-done
-```
-
-PART II-2 uncertainty regularizer (on random base):
-
-```bash
-for S in 0 1 2; do
-  python scripts/train_round.py --config mitigations/uncertainty_reg.yaml --round 1 --limit 40 --seed $S
-  python scripts/evaluate.py    --config mitigations/uncertainty_reg.yaml --round 1 --limit 40 --seed $S \
-      --out_dir outputs/mit_uncertreg/seed$S --baseline_dir outputs/baseline
-done
-```
-
-Note: the per-arm YAML's `arm.out_dir_template` already resolves to the same
-`outputs/<arm>/seed{seed}` path, so `--out_dir` on the eval call is belt-and-suspenders.
-The train command writes to the arm template automatically; pass `--out_dir`
-explicitly on eval to be safe.
-
-## 6. Optional arm (appendix)
-
-```bash
-for S in 0 1 2; do
-  python scripts/train_round.py --config controls/judge_length_matched.yaml --round 1 --limit 40 --seed $S
-  python scripts/evaluate.py    --config controls/judge_length_matched.yaml --round 1 --limit 40 --seed $S \
-      --out_dir outputs/judge_length_matched/seed$S --baseline_dir outputs/baseline
-done
-```
-
-## 7. Aggregate + figures (local or on A100; no GPU needed)
+Repeat Stages 2-3 with `--seed 1` and `--seed 2` (each arm), then:
 
 ```bash
 python analysis/aggregate_arms.py --config configs/experiment.yaml --seeds 0 1 2
 python analysis/make_figures.py
 ```
 
-Expected: `outputs/arms_summary.json` + `figures/{fig1_discovery,fig2_mitigation,fig3_correctness_conditioned}.png`.
+## Runtime (A100, seed 0)
 
-## 8. Manual factuality annotation (author, no compute)
+prepare ~1 min; baseline eval ~8 min; each DPO arm ~15 min train + ~8 min eval;
+4 trained arms ~ 90 min; aggregate ~1 min. Full seed-0 pass under ~2 hours.
 
-Label seed-0 responses of {baseline, random, random_length_matched, mit_pairfilter, mit_uncertreg} as CORRECT/PARTIAL/INCORRECT against the TruthfulQA references already in each `eval_responses.jsonl` row. Save to `outputs/manual_factuality.jsonl` with rows `{prompt_id, arm, llm_factuality, manual_label}`, then re-run step 7 to refresh the correctness-conditioned figure with manual labels.
+## Failure recovery
 
-## 9. Failure recovery
+- One arm/seed failed: re-run just that train+eval pair; arm/seed dirs are isolated.
+- OOM: the loop holds policy + frozen reference (two 0.6B models). Lower
+  `dpo.per_device_train_batch_size` to 2 in `configs/experiment.yaml`.
+- SamPO sanity-check failed (token counts unequal): confirm `length_debias=sampo`
+  resolved (printed at train start) and that completions are non-empty.
 
-- A single arm/seed failed: just re-run that one train+eval pair; outputs are arm/seed-scoped and idempotent.
-- Length/uncertainty filter sanity-abort ("only N pairs survive"): bump `--limit 80` for that arm (40 train prompts -> more candidate pairs survive the filter).
-- OOM on the regularized arm: it loads policy + frozen reference (two 0.6B models). Reduce `dpo.per_device_train_batch_size` in `configs/experiment.yaml` to 2.
-- TRL/transformers version drift on the unregularized arms: `dpo.py` already retries DPOConfig/DPOTrainer kwargs across versions; the regularized arm does not use TRL.
+## What to download locally
 
-## 10. What to download locally
+Per arm/seed: `metrics.json`, `adapter/train_metadata.json`, `eval_responses.jsonl`,
+`preference_diagnostics.json`, `winrate_pairs.jsonl`; plus `outputs/arms_summary.json`
+and `figures/*.png`. Skip the LoRA weight files unless resuming training.
 
-Per arm/seed (small): `metrics.json`, `preference_diagnostics.json`, `adapter/train_metadata.json`, `eval_responses.jsonl`, `winrate_pairs.jsonl`. Plus `outputs/arms_summary.json` and `figures/*.png`. Skip the LoRA adapter weight files unless you intend to resume training; the metrics + responses are sufficient for all analysis and the paper.
+## Deferred (gated) - medical red-team demo
+
+Only after the 5-arm seed-0 matrix passes and time/compute remain: a small
+qualitative pass over already-generated `eval_responses.jsonl` flagging
+overconfidence risk = incorrect/unsafe + low uncertainty + decisive wording.
+Application case study, not a second experiment. No new metrics.

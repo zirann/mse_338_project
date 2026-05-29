@@ -54,16 +54,24 @@ generation:
 # ----------------------------------------------------------------------------
 
 dpo:
-  num_rounds: 3
+  num_rounds: 1
   beta: 0.1
-  learning_rate: 5.0e-5
-  num_train_epochs: 1.0
+  # Stable knobs (validated by the Stage-2 vanilla smoke): the earlier 5e-5 / 1
+  # epoch / grad-accum 2 setting under-trained (loss ~ ln2, margins ~ 0).
+  learning_rate: 1.0e-4
+  num_train_epochs: 3.0
   per_device_train_batch_size: 4
-  gradient_accumulation_steps: 2
+  gradient_accumulation_steps: 1
   max_length: 512
   max_prompt_length: 256
   # KL sanity check; abort a round if the training KL exceeds this value.
   abort_kl_threshold: 5.0
+
+# Default arm settings (overridden by per-arm configs under experiments/).
+arm:
+  pair_construction: judge
+  length_debias: none      # none | sampo | lennorm
+  dpop_lambda: 0.0
 
 lora:
   r: 16

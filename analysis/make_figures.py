@@ -1,13 +1,15 @@
 #!/usr/bin/env python3
 """Render the paper figures from outputs/arms_summary.json into figures/.
 
-- Figure 1 (PART I, discovery): hedge_density across {baseline, judge_dpo,
-  random, random_length_matched} with +/- 1 SE bars. The visual claim is that
-  judge and random (and length-matched random) all sit well below baseline.
-- Figure 2 (PART II, mitigation): hedge_density for {baseline, random,
-  mit_pairfilter, mit_uncertreg} showing recovery toward baseline.
-- Figure 3 (correctness-conditioned): hedge_density on the INCORRECT subset
-  across arms; checks whether incorrect answers also lose hedging.
+- Figure 1 (length): response length across all arms. Confirms SamPO/DPOP move
+  length as intended and lets uncertainty changes be checked against length.
+- Figure 2 (reproduce): hedge_density for {baseline, vanilla_dpo, sampo_dpo}.
+  The reproduction claim: vanilla DPO suppresses hedging; SamPO length control
+  changes the picture.
+- Figure 3 (extend): hedge_density for {baseline, vanilla_dpo, sampo_dpo, dpop,
+  sampo_dpop}. Does DPOP positive-preservation retain uncertainty signaling?
+- Figure 4 (win-rate): judge_win_rate_vs_baseline across arms (quality is
+  maintained while length/uncertainty change).
 
 Reads only the aggregated JSON; no model loads. Arms absent from the summary are
 silently dropped from each figure so this runs on partial state.
@@ -25,8 +27,9 @@ from complexity_theater.io_utils import read_json  # noqa: E402
 
 FIG_DIR = ROOT / "figures"
 
-PART1_ARMS = ["baseline", "judge_dpo", "random", "random_length_matched"]
-PART2_ARMS = ["baseline", "random", "mit_pairfilter", "mit_uncertreg"]
+ALL_ARMS = ["baseline", "vanilla_dpo", "sampo_dpo", "dpop", "sampo_dpop"]
+REPRODUCE_ARMS = ["baseline", "vanilla_dpo", "sampo_dpo"]
+EXTEND_ARMS = ["baseline", "vanilla_dpo", "sampo_dpo", "dpop", "sampo_dpop"]
 
 
 def _setup():
@@ -58,45 +61,38 @@ def _bar(plt, arms_present, means, ses, title, ylabel, out_path):
     print(f"[make_figures] wrote {out_path}")
 
 
-def fig_part1(plt, idx):
-    arms = [a for a in PART1_ARMS if a in idx]
+def _metric_bar(plt, idx, arm_list, metric, title, ylabel, out_name):
+    arms = [a for a in arm_list if a in idx]
     if len(arms) < 2:
-        print("[make_figures] PART I figure skipped (need >= 2 arms)")
+        print(f"[make_figures] {out_name} skipped (need >= 2 arms present)")
         return
-    means = [idx[a]["hedge_density_mean"] for a in arms]
-    ses = [idx[a]["hedge_density_se"] for a in arms]
-    _bar(plt, arms, means, ses,
-         "PART I: uncertainty suppression across optimization conditions",
-         "hedge density (markers / 100 tok)", FIG_DIR / "fig1_discovery.png")
+    means = [idx[a].get(f"{metric}_mean", 0.0) for a in arms]
+    ses = [idx[a].get(f"{metric}_se", 0.0) for a in arms]
+    _bar(plt, arms, means, ses, title, ylabel, FIG_DIR / out_name)
 
 
-def fig_part2(plt, idx):
-    arms = [a for a in PART2_ARMS if a in idx]
-    if len(arms) < 2:
-        print("[make_figures] PART II figure skipped (need >= 2 arms)")
-        return
-    means = [idx[a]["hedge_density_mean"] for a in arms]
-    ses = [idx[a]["hedge_density_se"] for a in arms]
-    _bar(plt, arms, means, ses,
-         "PART II: mitigation recovery of uncertainty signaling",
-         "hedge density (markers / 100 tok)", FIG_DIR / "fig2_mitigation.png")
+def fig_length(plt, idx):
+    _metric_bar(plt, idx, ALL_ARMS, "length",
+                "Response length across arms (SamPO/DPOP length control)",
+                "mean response length (tokens)", "fig1_length.png")
 
 
-def fig_correctness(plt, summary):
-    cross = {e["arm"]: e for e in summary.get("correctness_conditioned", [])}
-    arms = [a for a in (PART1_ARMS + PART2_ARMS[1:]) if a in cross]
-    arms = list(dict.fromkeys(arms))  # dedupe, keep order
-    if len(arms) < 2:
-        print("[make_figures] correctness figure skipped (need >= 2 arms)")
-        return
-    incorrect_means = [cross[a]["breakdown"].get("INCORRECT", {}).get("hedge_density_mean", 0.0) for a in arms]
-    incorrect_ses = [cross[a]["breakdown"].get("INCORRECT", {}).get("hedge_density_se", 0.0) for a in arms]
-    fallback = any(cross[a]["label_source"] != "manual" for a in arms)
-    title = "Figure 3: hedge_density on INCORRECT subset across arms"
-    if fallback:
-        title += " (LLM-fallback)"
-    _bar(plt, arms, incorrect_means, incorrect_ses, title,
-         "hedge density (markers / 100 tok)", FIG_DIR / "fig3_correctness_conditioned.png")
+def fig_reproduce(plt, idx):
+    _metric_bar(plt, idx, REPRODUCE_ARMS, "hedge_density",
+                "Reproduce: hedge density, vanilla DPO vs SamPO length control",
+                "hedge density (markers / 100 tok)", "fig2_reproduce_hedge.png")
+
+
+def fig_extend(plt, idx):
+    _metric_bar(plt, idx, EXTEND_ARMS, "hedge_density",
+                "Extend: hedge density with DPOP positive preservation",
+                "hedge density (markers / 100 tok)", "fig3_extend_hedge.png")
+
+
+def fig_winrate(plt, idx):
+    _metric_bar(plt, idx, EXTEND_ARMS, "judge_win_rate_vs_round_0",
+                "Judge win-rate vs baseline across arms",
+                "win-rate vs baseline", "fig4_winrate.png")
 
 
 def parse_args() -> argparse.Namespace:
@@ -116,9 +112,10 @@ def main() -> None:
     except Exception as e:
         raise SystemExit(f"[make_figures] matplotlib unavailable: {e}")
     idx = _arm_index(summary)
-    fig_part1(plt, idx)
-    fig_part2(plt, idx)
-    fig_correctness(plt, summary)
+    fig_length(plt, idx)
+    fig_reproduce(plt, idx)
+    fig_extend(plt, idx)
+    fig_winrate(plt, idx)
 
 
 if __name__ == "__main__":

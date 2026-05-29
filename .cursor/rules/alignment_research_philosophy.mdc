@@ -1,206 +1,300 @@
 ---
-description: Rules for empirical AI alignment research on optimization-induced uncertainty suppression and mitigation under preference optimization. Prefer controlled interventions, inspectable artifacts, and narrow claims over broad framework-building.
+description: Rules for an empirical AI alignment course project building on DPO length-bias correction, extending it with DPOP-style preservation, and applying the resulting overconfidence metrics to a small medical red-team demo. Prefer paper-anchored extensions, controlled reproductions, and inspectable artifacts over self-invented methods or broad framework-building.
 alwaysApply: true
----
+-----------------
 
-# Uncertainty Suppression Research Rules
+# DPO Length-Bias + DPOP Extension Research Rules
 
-This repository is an empirical AI alignment research project.
+This repository is an empirical AI alignment research project for MS&E338.
+
+The project now follows this final structure:
+
+1. Reproduce / approximate an existing DPO length-bias correction paper.
+2. Extend that method with a DPOP-style preservation objective.
+3. Demonstrate a small AI-safety application: Medical Red Team Generator for Overconfidence Failures.
 
 The goal is NOT:
-- building a generic RLHF framework
-- building a scalable training platform
-- maximizing benchmark scores
-- creating production moderation systems
-- adding speculative abstractions
-- claiming a general theory of RLHF or DPO
+
+* inventing a new RLHF algorithm from scratch
+* building a generic RLHF framework
+* building a scalable training platform
+* maximizing benchmark scores
+* adding speculative infrastructure
+* claiming a general theory of DPO/RLHF
+* centering the project on complexity theater, epistemic simulacra, or iterative trajectory plots
 
 The goal IS:
-- studying whether preference optimization suppresses explicit uncertainty signaling
-- separating evaluator-driven effects from optimization-intrinsic effects using matched controls
-- testing whether uncertainty suppression persists under random preferences and length-matched controls
-- evaluating lightweight but principled uncertainty-preserving mitigations
-- analyzing whether incorrect answers also lose uncertainty markers
-- producing reproducible, inspectable empirical evidence for a narrow AI-safety claim
 
-Core thesis under test:
+* build on an existing extension target paper about DPO length/verbosity bias correction, such as SamPO / Park-style length correction
+* reproduce or approximate the length-control result in a small LoRA-DPO setting
+* test whether length-control also affects uncertainty signaling and overconfidence-like behavior
+* implement a DPOP-style preservation extension as the main project extension
+* evaluate whether length-controlled DPOP better preserves uncertainty signaling than vanilla DPO or length-controlled DPO
+* demonstrate safety relevance through a small medical overconfidence red-team case study
+* keep claims narrow, empirical, and reproducible
 
-Preference optimization can suppress epistemic uncertainty signaling, and part of this effect appears optimization-intrinsic rather than purely evaluator-driven; targeted uncertainty-preserving interventions may partially restore it.
+Core project thesis:
 
-## 1. One Clear Hypothesis Per Experiment
+DPO length/verbosity bias correction provides a principled baseline for controlling a known preference-optimization artifact. We extend this line by asking whether length-controlled DPO and length-controlled DPOP also mitigate a downstream safety-relevant artifact: suppression of uncertainty signaling and overconfident wrong answers.
 
-Each experiment should isolate one question.
+## 1. Paper-Anchored Extension First
 
-Examples:
-- Does judge-selected DPO suppress uncertainty markers relative to baseline?
-- Does random-preference DPO reproduce the suppression?
-- Does length-matched random DPO rule out DPO length bias as the explanation?
-- Does uncertainty-preserving pair filtering restore uncertainty markers?
-- Does uncertainty-regularized DPO restore uncertainty markers while preserving win-rate?
-- Do incorrect answers lose uncertainty markers after optimization?
+Do not invent new mitigation methods unless explicitly requested.
 
-Avoid combining multiple mechanisms unless the experiment explicitly tests their interaction.
+The main paper anchor is:
 
-## 2. Matched Controls Are Central
+* DPO length-bias correction / SamPO-style length control / Park-style length-vs-quality correction.
 
-All main arms should be matched as much as possible:
-- same base policy
-- same dataset split
-- same train/eval prompts
-- same candidate generation settings
-- same DPO/LoRA hyperparameters
-- same evaluation pipeline
-- same number of seeds when feasible
+The main extension method is:
 
-The main control arms are:
-- baseline
-- judge DPO
-- random-preference DPO
-- length-matched random DPO
-- pair-filter mitigation
-- uncertainty-regularized DPO
+* DPOP / DPO-Positive style preservation.
 
-Optional arms should be clearly labeled as appendix/supporting evidence.
+The extension should be framed as:
 
-## 3. Use Causal Language Carefully
+“Starting from length-controlled DPO, we add a DPOP-style positive preservation term and test whether it better preserves uncertainty signaling.”
 
-Do not claim causal point estimates or a formal decomposition.
+Do not frame self-designed uncertainty regularizers as the main contribution unless they are explicitly connected to DPOP.
 
-Preferred language:
-- “matched-intervention evidence”
-- “optimization-intrinsic component appears to persist”
-- “not fully attributable to evaluator preferences”
-- “consistent with optimization-induced uncertainty suppression”
-- “at this scale and setup”
+## 2. Reproduce → Critique → Extend
 
-Avoid:
-- “proves”
-- “causally decomposes”
-- “the essence of RLHF”
-- “DPO always suppresses uncertainty”
-- “judge preferences cause the effect”
+Every implementation step should map to one of these course-project roles:
 
-## 4. Uncertainty Signaling Is the Primary Outcome
+### Reproduce
+
+* vanilla DPO vs length-controlled DPO
+* show whether length/verbosity bias is reduced or controlled
+* use the smallest faithful implementation possible
+
+### Critique
+
+* length control may address verbosity/length bias but may not fully address uncertainty suppression or overconfident wrong answers
+* DPO can still alter epistemic style even when length is controlled
+
+### Extend
+
+* length-controlled DPOP
+* evaluate uncertainty preservation and overconfidence risk
+
+### Application
+
+* small Medical Red Team Generator for Overconfidence Failures
+* identify examples where model outputs are incorrect, low-uncertainty, and high-confidence
+
+## 3. Main Experimental Arms
+
+The main arms should be limited to:
+
+1. Baseline model / no DPO
+2. Vanilla DPO
+3. Length-controlled DPO / SamPO-style correction
+4. DPOP
+5. Length-controlled DPOP
+6. Medical red-team application demo using the best available trained/evaluated model outputs
+
+Optional appendix arms only if already implemented and useful:
+
+* random DPO
+* cDPO / IPO
+* previous uncertainty regularizer
+* iterative trajectory
+
+Do not let optional arms become the main story.
+
+## 4. Metrics
 
 Primary metrics:
-- `uncertainty_score`
-- `hedge_density`
-- correctness-conditioned uncertainty on manually labeled incorrect responses
-- judge win-rate vs baseline
-- factuality / manual correctness labels
 
-Secondary or appendix metrics:
-- `reasoning_narration_density`
-- `structural_complexity`
-- `epistemic_marker_density`
-- `information_density`
-- old iterative trajectory plots
+* response length
+* judge win-rate / preference score
+* hedge_density
+* uncertainty_score
+* correctness / factuality
+* overconfidence risk score for medical examples
 
-Do not re-center the project on complexity theater, evaluator bias, or reasoning narration.
+Medical overconfidence risk should focus on:
 
-## 5. Mitigation Must Be Principled and Inspectable
+incorrect or unsafe answer
++
+low uncertainty signaling
++
+high confidence / decisive wording
 
-The mitigation section should test uncertainty preservation, not build a general RLHF algorithm.
+Secondary metrics:
 
-Required mitigation:
-- uncertainty-preserving pair filtering
+* reasoning_narration_density
+* structural_complexity
+* epistemic_marker_density
+* information_density
+* old trajectory metrics
 
-Recommended mitigation:
-- standalone uncertainty-regularized DPO with token-level uncertainty penalty
+Do not re-center the project on reasoning narration or complexity theater.
 
-The regularizer should remain mathematically explicit:
-- derive the DPO loss
-- define the uncertainty-token set
-- define the penalty
-- log DPO loss component, penalty component, and mean penalty
+## 5. Medical Red Team Generator Scope
 
-Do not subclass TRL internals unless explicitly required. Prefer a standalone minimal loop for the regularized arm.
+The medical red-team component is an application case study, not a second full research project.
 
-## 6. Preserve Experimental Observability
+It should:
 
-Every arm/seed must save:
-- prompts
-- generated candidates
-- preference pairs
-- judge outputs when applicable
-- filter retention statistics
-- training metadata
-- metrics
-- eval responses
-- win-rate pairs
-- manual labels when available
+* use a small curated or generated set of medical QA prompts
+* avoid giving actionable medical advice as final recommendations
+* evaluate model responses for overconfidence risk
+* surface examples of confidently wrong or insufficiently cautious answers
+* compute a simple risk score
+* produce inspectable examples
 
-Use JSONL for row-level artifacts.
+It should NOT:
 
-The repository should make it easy to inspect:
-- what was generated
-- which pairs were chosen/rejected
-- which filters dropped pairs
-- whether incorrect answers lost uncertainty markers
-- whether mitigations restored uncertainty markers
+* claim clinical validity
+* claim to evaluate real medical safety comprehensively
+* require large-scale medical benchmark infrastructure
+* provide medical recommendations to users
+* become the main experimental burden of the project
 
-## 7. Prefer Stability Over Elegant Refactors
+Preferred framing:
+
+“As a safety application, we instantiate our uncertainty-suppression metrics in a small medical red-team demo to identify overconfidence failures.”
+
+## 6. DPOP Implementation Discipline
+
+DPOP should be implemented as a paper-anchored loss-side extension.
+
+Keep the math explicit:
+
+* define vanilla DPO loss
+* define DPOP positive preservation term
+* define length-control / length-matching rule
+* define combined length-controlled DPOP objective
+
+Log:
+
+* DPO loss component
+* DPOP preservation component
+* total loss
+* rewards_margins
+* train_loss
+* response length
+* uncertainty metrics
+
+Avoid fragile trainer rewrites unless necessary. If TRL supports the baseline, use it. If DPOP requires a custom loop, keep it minimal and well-tested.
+
+## 7. Causal Language Discipline
+
+Do not claim formal causal decomposition.
+
+Preferred language:
+
+* “matched comparison”
+* “controlled reproduction”
+* “paper-anchored extension”
+* “consistent with”
+* “suggests”
+* “in this small-scale setup”
+* “we test whether”
+* “we observe”
+
+Avoid:
+
+* “proves”
+* “causally decomposes”
+* “DPO always”
+* “RLHF inherently”
+* “the essence of preference optimization”
+
+## 8. Preserve Experimental Observability
+
+Every experiment must save:
+
+* prompts
+* generated candidates
+* preference pairs
+* judge outputs when applicable
+* selected/rejected completions
+* length-control filtering statistics
+* DPOP loss components
+* training metadata
+* evaluation responses
+* metrics
+* medical red-team examples
+
+Use JSONL whenever possible.
+
+The repo should make it easy to inspect:
+
+* what the model generated
+* why a pair was selected
+* how length control changed the data
+* how DPOP changed training
+* whether uncertainty markers changed
+* which medical examples are overconfidence failures
+
+## 9. Prefer Stability Over Refactor Elegance
 
 Do not rename working packages or rewrite imports unless necessary.
 
-Prefer additive organization:
-- keep `src/complexity_theater/`
-- keep `scripts/`
-- add `controls/`, `mitigations/`, `analysis/`, `figures/` as needed
+Prefer additive changes:
 
-Avoid broad mechanical refactors that risk breaking the A100 run pipeline.
+* keep existing `scripts/`
+* keep existing `src/complexity_theater/` if renaming would risk breakage
+* add `experiments/`, `controls/`, `extensions/`, `medical_redteam/`, `analysis/`, `figures/` as needed
 
-## 8. Keep Scope Narrow
+Avoid broad refactors that could break A100 reproducibility.
+
+## 10. Scope Control
 
 Do not add:
-- new datasets
-- new judge models
-- new optimization algorithms
-- PPO/GRPO/RLAIF
-- new large metric families
-- dashboards
-- agent frameworks
-- multi-stage orchestration
+
+* new large datasets
+* new judge families
+* PPO/GRPO/RLAIF
+* full clinical benchmark suites
+* dashboards
+* agent frameworks
+* multi-stage orchestration
+* many extra baselines
 
 unless explicitly requested.
 
-The current project is already sufficiently complex:
-discovery + matched controls + mitigation + correctness-conditioned analysis.
+The final project already has enough scope:
+SamPO/Park reproduction + length-controlled DPOP extension + medical overconfidence demo.
 
-## 9. Archive, Do Not Destroy
+## 11. Archive, Do Not Destroy
 
-Old trajectory outputs, toxicity/redteam artifacts, and obsolete figures should be moved to `legacy/` or `outputs/_archive_*`.
+Old outputs and old project framings should be archived, not silently deleted.
+
+Archive:
+
+* failed reruns
+* old iterative trajectory outputs
+* old uncertainty-regularizer-only experiments
+* obsolete complexity-theater figures
+* old medical/redteam scratch files if superseded
 
 Before deleting anything:
-- check imports
-- check tests
-- check README references
-- check paper references
-- check runbook references
 
-If uncertain, archive instead of deleting.
+* check imports
+* check tests
+* check README references
+* check paper references
+* check runbook references
 
-## 10. Clean Diffs and Verification
+If uncertain, move to `legacy/` or `outputs/_archive_*`.
 
-Every changed line should support:
-- the uncertainty-suppression thesis
-- matched controls
-- mitigation
-- analysis
-- paper/reporting
-- runbook/reproducibility
+## 12. Verification Before A100 Runs
 
-Avoid unrelated formatting or broad rewrites.
+Before asking the user to run A100:
 
-After each implementation step, summarize:
-- files changed
-- files archived
-- files deleted
-- tests run
-- expected A100 commands
+* `pytest -q` must pass
+* mock smoke must cover every new CLI flag
+* config merge must be verified
+* runbook must provide exact command order
+* expected outputs must be listed
+* failure diagnostics must be clear
 
-Minimum verification before asking the user to run A100:
-- `pytest -q`
-- mock smoke for every new flag
-- analysis scripts run on fixture or mock data
-- runbook has exact command order
+After implementation, summarize:
+
+* files changed
+* files archived
+* files deleted
+* tests run
+* exact A100 commands
+* what results would support or falsify the current claim

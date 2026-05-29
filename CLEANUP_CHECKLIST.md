@@ -1,12 +1,40 @@
-# Output cleanup checklist (uncertainty-suppression pivot)
+# Cleanup checklist
 
-The project pivoted from the multi-round "Epistemic Simulacra" trajectory to the
-uncertainty-suppression + mitigation framing. All final experiments will be
-rerun from scratch as single-round matched arms. This checklist records what was
-archived, what was kept, and what is flagged for manual deletion.
+Principle: nothing is auto-deleted. Stale artifacts are MOVED (reversible). To
+restore, move them back.
 
-Principle: nothing is auto-deleted. Stale artifacts are MOVED (reversible) into
-`outputs/_archive_trajectory_v1/`. To restore, move them back.
+## Stage 0 archive for the Length-Controlled DPO + DPOP redesign (current)
+
+The project is now anchored on SamPO length-bias correction + a DPOP extension.
+The uncertainty-suppression rerun under-trained (DPO did not move the policy) and
+is superseded. Moved (see `archive_failed_runs/RESULTS_README.md` and
+`archive_configs/README.md`):
+
+- `outputs_old/` -> `archive_failed_runs/outputs_old/`
+- `results_bundle_1/` -> `archive_failed_runs/results_bundle_1/`
+- `controls/` (random, random_length_matched, judge_length_matched) -> `archive_configs/controls/`
+- `mitigations/` (pair_filter, uncertainty_reg) -> `archive_configs/mitigations/`
+- `experiments/judge_dpo.yaml` -> `archive_configs/judge_dpo.yaml`
+
+Kept active: `experiments/judge_dpo_strong.yaml` (stable knobs -> baseline defaults),
+`src/complexity_theater/` (all modules importable; regularizer OFF by default),
+`legacy/` (untouched).
+
+Active run layout after redesign:
+- `outputs/baseline/`                  base policy eval (no DPO)
+- `outputs/vanilla_dpo/seed{N}/`       arm B
+- `outputs/sampo_dpo/seed{N}/`         arm C (SamPO length debiasing)
+- `outputs/dpop/seed{N}/`              arm D (DPOP)
+- `outputs/sampo_dpop/seed{N}/`        arm E (SamPO + DPOP)
+- `outputs/arms_summary.json`, `figures/*.png`
+
+---
+
+## Prior cleanup (uncertainty-suppression pivot) - historical
+
+The earlier pivot moved the multi-round "Epistemic Simulacra" trajectory into
+`outputs/_archive_trajectory_v1/` (now itself under `archive_failed_runs/outputs_old/`).
+The notes below are retained for provenance.
 
 ## Archived (moved to outputs/_archive_trajectory_v1/)
 

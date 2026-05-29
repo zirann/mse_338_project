@@ -32,15 +32,14 @@ from complexity_theater.uncertainty import uncertainty_score  # noqa: E402
 DEFAULT_SEEDS = (0, 1, 2)
 ARM_DIR_TEMPLATES: dict[str, str] = {
     "baseline": "outputs/baseline",  # single dir (no seed sweep)
-    "judge_dpo": "outputs/judge_dpo/seed{seed}",
-    "random": "outputs/random/seed{seed}",
-    "random_length_matched": "outputs/random_length_matched/seed{seed}",
-    "judge_length_matched": "outputs/judge_length_matched/seed{seed}",
-    "mit_pairfilter": "outputs/mit_pairfilter/seed{seed}",
-    "mit_uncertreg": "outputs/mit_uncertreg/seed{seed}",
+    "vanilla_dpo": "outputs/vanilla_dpo/seed{seed}",
+    "sampo_dpo": "outputs/sampo_dpo/seed{seed}",
+    "dpop": "outputs/dpop/seed{seed}",
+    "sampo_dpop": "outputs/sampo_dpop/seed{seed}",
 }
 
 HEADLINE_METRICS = (
+    "length",
     "hedge_density",
     "uncertainty_score",
     "confidence_marker_density",
