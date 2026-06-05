@@ -1,0 +1,22 @@
+# Extension arm: decoupled-support SamPO+DPOP.
+#
+# Motivation: naive SamPO+DPOP applies the DPOP positive-preservation anchor to
+# the same per-step-resampled SamPO token subset that drives the preference
+# margin, so the anchor preserves only a random fragment of the chosen response
+# and dilutes preservation of uncertainty-bearing tokens. This arm decouples
+# the two supports:
+#   - preference margin: SamPO equal-count subsets (length-debiased comparison)
+#   - DPOP anchor: FULL chosen completion (faithful to Smaug; preserves all
+#     chosen tokens incl. uncertainty-bearing ones)
+#
+# dpop_lambda matches the existing sampo_dpop arm (0.5) so the only difference
+# from naive sampo_dpop is dpop_support: full_chosen vs sampo_subset.
+base_config: configs/experiment.yaml
+
+arm:
+  name: sampo_dpop_decoupled
+  pair_construction: judge
+  length_debias: sampo
+  dpop_lambda: 0.5
+  dpop_support: full_chosen
+  out_dir_template: outputs/sampo_dpop_decoupled/seed{seed}

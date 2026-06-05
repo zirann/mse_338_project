@@ -1,0 +1,11 @@
+# Arm E: length-controlled DPOP (extend). SamPO token down-sampling + the DPOP
+# positive-preservation term together. Keep dpop_lambda equal to the value
+# chosen for arm D so D and E differ only by length debiasing.
+base_config: configs/experiment.yaml
+
+arm:
+  name: sampo_dpop
+  pair_construction: judge
+  length_debias: sampo
+  dpop_lambda: 0.5
+  out_dir_template: outputs/sampo_dpop/seed{seed}

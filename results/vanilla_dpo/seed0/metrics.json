@@ -1,0 +1,16 @@
+{
+  "round": 1,
+  "n_eval": 80,
+  "mock": false,
+  "length": 164.65,
+  "structural_complexity": 0.0625,
+  "reasoning_narration_density": 2.7584803750085,
+  "hedge_density": 0.15053186013085332,
+  "confidence_marker_density": 0.04577529580775869,
+  "uncertainty_score": 0.6479474399253975,
+  "epistemic_marker_density": 2.977166251396564,
+  "factuality": 0.275,
+  "information_density": 0.0058736109671413865,
+  "judge_win_rate_vs_round_0": 0.6875,
+  "judge_parse_failures_total_instance": 0
+}

@@ -1,0 +1,93 @@
+# Base experiment configuration for the preference-optimization study.
+# All hyperparameters live here so the paper can reference exact values;
+# per-arm files under experiments/ override only the loss components.
+
+seed: 42
+
+# ----------------------------------------------------------------------------
+# Models
+# ----------------------------------------------------------------------------
+
+base_model:
+  hf_id: Qwen/Qwen3-0.6B
+  device: auto   # CUDA > MPS > CPU per src/complexity_theater/model_factory.py
+
+judge:
+  hf_id: Qwen/Qwen2.5-7B-Instruct
+  device: auto
+  greedy: true   # judge always decoded greedily for stability across rounds
+
+# ----------------------------------------------------------------------------
+# Dataset
+# ----------------------------------------------------------------------------
+
+dataset:
+  name: truthful_qa
+  split: validation
+  n_train: 80
+  n_eval: 80
+  # Optional category whitelist to drop ambiguous prompts.
+  category_whitelist:
+    - "Misconceptions"
+    - "Science"
+    - "History"
+    - "Health"
+    - "Law"
+    - "Statistics"
+
+# ----------------------------------------------------------------------------
+# Generation (per-round candidate sampling)
+# ----------------------------------------------------------------------------
+
+generation:
+  k_candidates_per_prompt: 4
+  temperature: 0.9
+  top_p: 0.95
+  max_new_tokens: 200
+  # Eval-time generation uses a separate config (slightly lower temperature
+  # for stable measurement).
+  eval_temperature: 0.7
+
+# ----------------------------------------------------------------------------
+# DPO (per-round update)
+# ----------------------------------------------------------------------------
+
+dpo:
+  num_rounds: 1
+  beta: 0.1
+  learning_rate: 1.0e-4
+  num_train_epochs: 3.0
+  per_device_train_batch_size: 4
+  gradient_accumulation_steps: 1
+  max_length: 512
+  max_prompt_length: 256
+  # KL sanity check; abort a round if the training KL exceeds this value.
+  abort_kl_threshold: 5.0
+
+# Default arm settings (overridden by per-arm configs under experiments/).
+arm:
+  pair_construction: judge
+  length_debias: none      # none | sampo | lennorm
+  dpop_lambda: 0.0
+
+lora:
+  r: 16
+  alpha: 32
+  dropout: 0.05
+  target_modules:
+    - q_proj
+    - k_proj
+    - v_proj
+    - o_proj
+    - up_proj
+    - down_proj
+    - gate_proj
+
+# ----------------------------------------------------------------------------
+# Output layout
+# ----------------------------------------------------------------------------
+
+outputs:
+  data_dir: outputs/data
+  per_round_dir_template: outputs/round_{round}
+  trajectory_path: outputs/trajectory.json

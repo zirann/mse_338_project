@@ -1,0 +1,10 @@
+# Arm B: vanilla DPO (reproduction baseline). Judge preferences, no length
+# debiasing, no DPOP. Runs through the standalone matched loop.
+base_config: configs/experiment.yaml
+
+arm:
+  name: vanilla_dpo
+  pair_construction: judge
+  length_debias: none
+  dpop_lambda: 0.0
+  out_dir_template: outputs/vanilla_dpo/seed{seed}

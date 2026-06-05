@@ -1,0 +1,11 @@
+# Arm C: SamPO length-controlled DPO (reproduce). Per-pair token-count
+# equalization (down-sample the longer side) removes the length-reward
+# correlation without discarding pairs.
+base_config: configs/experiment.yaml
+
+arm:
+  name: sampo_dpo
+  pair_construction: judge
+  length_debias: sampo
+  dpop_lambda: 0.0
+  out_dir_template: outputs/sampo_dpo/seed{seed}

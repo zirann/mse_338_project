@@ -1,0 +1,56 @@
+{
+  "status": "ok",
+  "trainer": "local_dpo",
+  "base_model_name": "Qwen/Qwen3-0.6B",
+  "reference_adapter_path": null,
+  "num_pairs": 80,
+  "hparams": {
+    "beta": 0.1,
+    "learning_rate": 0.0001,
+    "num_train_epochs": 3.0,
+    "per_device_train_batch_size": 4,
+    "gradient_accumulation_steps": 1,
+    "max_length": 512,
+    "max_prompt_length": 256,
+    "abort_kl_threshold": 5.0,
+    "num_rounds": 1
+  },
+  "lora": {
+    "r": 16,
+    "alpha": 32,
+    "dropout": 0.05,
+    "target_modules": [
+      "q_proj",
+      "k_proj",
+      "v_proj",
+      "o_proj",
+      "up_proj",
+      "down_proj",
+      "gate_proj"
+    ]
+  },
+  "reg": {
+    "reg_formulation": "A",
+    "reg_lambda": 0.0
+  },
+  "length_debias": "sampo",
+  "dpop_lambda": 0.5,
+  "dpop_support": "full_chosen",
+  "dpop_penalty_support": "full_chosen",
+  "seed": 1,
+  "train_loss": 0.23827923299969977,
+  "loss_first": 0.6931471824645996,
+  "loss_last": 0.0003836735268123448,
+  "dpo_loss_component": 0.23827923299969977,
+  "penalty_component": 0.0,
+  "mean_penalty": 0.0,
+  "mean_dpop_penalty": 1.0706222216288248,
+  "reg_formulation": "A",
+  "reg_lambda": 0.0,
+  "rewards_margins": 4.968148733302951,
+  "rewards_margins_final": 8.667107582092285,
+  "rewards_margins_max": 12.311891555786133,
+  "mean_tokens_used_chosen": 198.775,
+  "mean_tokens_used_rejected": 198.775,
+  "num_steps": 60
+}
